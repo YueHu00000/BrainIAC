@@ -1,0 +1,264 @@
+"""Extract block 3/6/9/12 and final token-0 BrainIAC embeddings."""
+
+from __future__ import annotations
+
+import argparse
+import importlib.util
+from collections.abc import Iterable, Sequence
+from pathlib import Path
+from types import ModuleType
+
+import numpy as np
+import torch
+
+from .preprocess_t1t2 import MODALITIES, default_brainiac_root
+
+BLOCK_NUMBERS = (3, 6, 9, 12)
+BLOCK_INDICES = tuple(number - 1 for number in BLOCK_NUMBERS)
+EXPECTED_INPUT_SHAPE = (2, 1, 96, 96, 96)
+EXPECTED_TOKEN_COUNT = 216
+EXPECTED_HIDDEN_SIZE = 768
+MODEL_KINDS = ("backbone", "brainage", "mci")
+
+
+def _load_source_module(name: str, path: Path) -> ModuleType:
+    spec = importlib.util.spec_from_file_location(name, str(path))
+    if spec is None or spec.loader is None:
+        raise ImportError(f"cannot load module from {path}")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def load_public_model_module(brainiac_root: str | Path | None = None) -> ModuleType:
+    root = Path(brainiac_root).resolve() if brainiac_root is not None else default_brainiac_root()
+    path = root / "src" / "model.py"
+    if not path.is_file():
+        raise FileNotFoundError(f"BrainIAC model.py does not exist: {path}")
+    return _load_source_module("_brainiac_public_model", path)
+
+
+def load_public_dataset_module(brainiac_root: str | Path | None = None) -> ModuleType:
+    root = Path(brainiac_root).resolve() if brainiac_root is not None else default_brainiac_root()
+    path = root / "src" / "dataset.py"
+    if not path.is_file():
+        raise FileNotFoundError(f"BrainIAC dataset.py does not exist: {path}")
+    return _load_source_module("_brainiac_public_dataset", path)
+
+
+def load_encoder(
+    model_kind: str,
+    checkpoint_path: str | Path,
+    *,
+    brainiac_checkpoint: str | Path | None = None,
+    device: str | torch.device = "cpu",
+    brainiac_root: str | Path | None = None,
+    model_module: ModuleType | None = None,
+) -> torch.nn.Module:
+    """Load the raw MONAI ViT using the public BrainIAC checkpoint semantics."""
+    if model_kind not in MODEL_KINDS:
+        raise ValueError(f"model_kind must be one of {MODEL_KINDS}, found {model_kind!r}")
+    checkpoint_path = Path(checkpoint_path)
+    if not checkpoint_path.is_file():
+        raise FileNotFoundError(f"checkpoint does not exist: {checkpoint_path}")
+
+    public_model = model_module or load_public_model_module(brainiac_root)
+    target_device = torch.device(device)
+
+    if model_kind == "backbone":
+        wrapper = public_model.ViTBackboneNet(str(checkpoint_path))
+        encoder = wrapper.backbone
+    else:
+        if brainiac_checkpoint is None:
+            raise ValueError("brainiac_checkpoint is required for a fine-tuned model")
+        brainiac_checkpoint = Path(brainiac_checkpoint)
+        if not brainiac_checkpoint.is_file():
+            raise FileNotFoundError(f"BrainIAC checkpoint does not exist: {brainiac_checkpoint}")
+
+        backbone = public_model.ViTBackboneNet(str(brainiac_checkpoint))
+        classifier = public_model.Classifier(d_model=EXPECTED_HIDDEN_SIZE, num_classes=1)
+        full_model = public_model.SingleScanModel(backbone, classifier)
+
+        checkpoint = torch.load(str(checkpoint_path), map_location="cpu", weights_only=False)
+        state_dict = checkpoint.get("state_dict", checkpoint)
+        remapped_state_dict = {}
+        for key, value in state_dict.items():
+            if key.startswith("model."):
+                key = key[6:]
+            remapped_state_dict[key] = value
+        full_model.load_state_dict(remapped_state_dict, strict=True)
+        encoder = full_model.backbone.backbone
+
+    encoder.to(target_device)
+    encoder.eval()
+    for parameter in encoder.parameters():
+        parameter.requires_grad_(False)
+    return encoder
+
+
+def extract_selected_embeddings(
+    encoder: torch.nn.Module,
+    images: torch.Tensor,
+    *,
+    device: str | torch.device | None = None,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Return ``block_embed [2,4,768]`` and ``final_embed [2,768]``."""
+    if tuple(images.shape) != EXPECTED_INPUT_SHAPE:
+        raise ValueError(f"images must have shape {EXPECTED_INPUT_SHAPE}, found {tuple(images.shape)}")
+    if not torch.isfinite(images).all():
+        raise ValueError("images contain NaN or Inf")
+
+    if device is None:
+        try:
+            target_device = next(encoder.parameters()).device
+        except StopIteration:
+            target_device = images.device
+    else:
+        target_device = torch.device(device)
+        encoder.to(target_device)
+
+    encoder.eval()
+    with torch.inference_mode():
+        final_tokens, hidden_states = encoder(images.to(device=target_device, dtype=torch.float32))
+
+    if len(hidden_states) != 12:
+        raise ValueError(f"BrainIAC ViT must return 12 hidden states, found {len(hidden_states)}")
+    expected_token_shape = (2, EXPECTED_TOKEN_COUNT, EXPECTED_HIDDEN_SIZE)
+    if tuple(final_tokens.shape) != expected_token_shape:
+        raise ValueError(f"final token shape must be {expected_token_shape}, found {tuple(final_tokens.shape)}")
+    for index, state in enumerate(hidden_states):
+        if tuple(state.shape) != expected_token_shape:
+            raise ValueError(
+                f"hidden state {index + 1} must have shape {expected_token_shape}, found {tuple(state.shape)}"
+            )
+
+    block_tensor = torch.stack([hidden_states[index][:, 0, :] for index in BLOCK_INDICES], dim=1)
+    final_tensor = final_tokens[:, 0, :]
+    block_embed = block_tensor.detach().to(device="cpu", dtype=torch.float32).numpy()
+    final_embed = final_tensor.detach().to(device="cpu", dtype=torch.float32).numpy()
+
+    if block_embed.shape != (2, 4, EXPECTED_HIDDEN_SIZE):
+        raise ValueError(f"block_embed has unexpected shape {block_embed.shape}")
+    if final_embed.shape != (2, EXPECTED_HIDDEN_SIZE):
+        raise ValueError(f"final_embed has unexpected shape {final_embed.shape}")
+    if not np.isfinite(block_embed).all() or not np.isfinite(final_embed).all():
+        raise ValueError("encoder produced NaN or Inf embeddings")
+    return block_embed, final_embed
+
+
+def load_study_images(
+    study_id: str,
+    processed_root: str | Path,
+    *,
+    brainiac_root: str | Path | None = None,
+    transform=None,
+) -> torch.Tensor:
+    """Load T1 then T2 using the public BrainIAC validation transform."""
+    if transform is None:
+        dataset_module = load_public_dataset_module(brainiac_root)
+        transform = dataset_module.get_validation_transform(image_size=(96, 96, 96))
+
+    modality_tensors = []
+    for modality in MODALITIES:
+        path = Path(processed_root) / study_id / f"{modality}.nii.gz"
+        if not path.is_file():
+            raise FileNotFoundError(f"processed NIfTI does not exist: {path}")
+        transformed = transform({"image": str(path)})
+        tensor = torch.as_tensor(transformed["image"], dtype=torch.float32)
+        if tuple(tensor.shape) != (1, 96, 96, 96):
+            raise ValueError(f"{modality} transform returned shape {tuple(tensor.shape)}")
+        modality_tensors.append(tensor)
+    images = torch.stack(modality_tensors, dim=0)
+    if not torch.isfinite(images).all():
+        raise ValueError(f"transformed images contain NaN or Inf for {study_id}")
+    return images
+
+
+def save_embedding_npz(
+    output_path: str | Path,
+    block_embed: np.ndarray,
+    final_embed: np.ndarray,
+    *,
+    overwrite: bool = False,
+) -> Path:
+    """Save exactly the two requested float32 arrays, without metadata or hashes."""
+    output_path = Path(output_path)
+    if output_path.exists() and not overwrite:
+        raise FileExistsError(f"embedding output already exists: {output_path}")
+    block_embed = np.asarray(block_embed, dtype=np.float32)
+    final_embed = np.asarray(final_embed, dtype=np.float32)
+    if block_embed.shape != (2, 4, EXPECTED_HIDDEN_SIZE):
+        raise ValueError(f"block_embed must have shape (2, 4, 768), found {block_embed.shape}")
+    if final_embed.shape != (2, EXPECTED_HIDDEN_SIZE):
+        raise ValueError(f"final_embed must have shape (2, 768), found {final_embed.shape}")
+    if not np.isfinite(block_embed).all() or not np.isfinite(final_embed).all():
+        raise ValueError("embeddings contain NaN or Inf")
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    np.savez_compressed(output_path, block_embed=block_embed, final_embed=final_embed)
+    return output_path
+
+
+def extract_whitelist_for_checkpoint(
+    study_ids: Sequence[str],
+    processed_root: str | Path,
+    output_root: str | Path,
+    *,
+    model_kind: str,
+    checkpoint_path: str | Path,
+    brainiac_checkpoint: str | Path | None = None,
+    device: str | torch.device = "cpu",
+    brainiac_root: str | Path | None = None,
+    overwrite: bool = False,
+) -> None:
+    encoder = load_encoder(
+        model_kind,
+        checkpoint_path,
+        brainiac_checkpoint=brainiac_checkpoint,
+        device=device,
+        brainiac_root=brainiac_root,
+    )
+    for study_id in study_ids:
+        images = load_study_images(study_id, processed_root, brainiac_root=brainiac_root)
+        block_embed, final_embed = extract_selected_embeddings(encoder, images, device=device)
+        save_embedding_npz(
+            Path(output_root) / f"{study_id}.npz",
+            block_embed,
+            final_embed,
+            overwrite=overwrite,
+        )
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description="Extract BrainIAC block 3/6/9/12 and final token-0 embeddings")
+    parser.add_argument("--study-id", action="append", required=True, help="Study ID; repeat for multiple studies")
+    parser.add_argument("--processed-root", required=True, help="Root containing nested processed T1/T2 NIfTI")
+    parser.add_argument("--output-root", required=True, help="Destination for one <Study_ID>.npz per Study")
+    parser.add_argument("--model-kind", choices=MODEL_KINDS, required=True)
+    parser.add_argument("--checkpoint", required=True)
+    parser.add_argument("--brainiac-checkpoint", help="Required for brainage and mci fine-tuned checkpoints")
+    parser.add_argument("--brainiac-root", default=str(default_brainiac_root()))
+    parser.add_argument("--device", default="cuda:0" if torch.cuda.is_available() else "cpu")
+    parser.add_argument("--overwrite", action="store_true")
+    return parser
+
+
+def main(argv: Iterable[str] | None = None) -> None:
+    args = build_parser().parse_args(argv)
+    extract_whitelist_for_checkpoint(
+        args.study_id,
+        args.processed_root,
+        args.output_root,
+        model_kind=args.model_kind,
+        checkpoint_path=args.checkpoint,
+        brainiac_checkpoint=args.brainiac_checkpoint,
+        device=args.device,
+        brainiac_root=args.brainiac_root,
+        overwrite=args.overwrite,
+    )
+    print(f"Saved {len(args.study_id)} {args.model_kind} embedding files to {args.output_root}")
+
+
+if __name__ == "__main__":
+    main()
+
