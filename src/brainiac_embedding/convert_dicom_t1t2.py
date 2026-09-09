@@ -15,6 +15,14 @@ from pathlib import Path
 
 import pandas as pd
 
+from ._resume import (
+    check_separate_roots,
+    clean_study_scratch,
+    nifti_pair_complete,
+    remove_output,
+    validate_study_id,
+)
+
 EXCEPTIONS = {
     "STUDY_0230": 8,
     "STUDY_0462": 9,
@@ -45,6 +53,8 @@ def read_study_ids(csv_path: str | Path, study_id_column: str = "Study_ID") -> l
     study_ids = [value.strip() for value in frame[study_id_column].tolist()]
     if any(not value for value in study_ids):
         raise ValueError(f"CSV column {study_id_column!r} contains empty values")
+    for study_id in study_ids:
+        validate_study_id(study_id)
     duplicate_mask = pd.Series(study_ids).duplicated()
     duplicates = [study_id for study_id, duplicate in zip(study_ids, duplicate_mask) if duplicate]
     if duplicates:
@@ -110,26 +120,36 @@ def convert_study(study_id: str, study_dir: str | Path, output_root: str | Path,
     """Convert the selected T1 and T2 series for one Study."""
     import SimpleITK as sitk
 
-    study_dir = Path(study_dir)
-    output_dir = Path(output_root) / study_id
+    validate_study_id(study_id)
+    study_dir = Path(study_dir).resolve()
+    output_root = Path(output_root).resolve()
+    check_separate_roots(study_dir, output_root)
+    output_dir = output_root / study_id
     t1_output = output_dir / "T1.nii.gz"
     t2_output = output_dir / "T2.nii.gz"
-    existing = [path for path in (t1_output, t2_output) if path.exists()]
-    if existing and not overwrite:
-        raise FileExistsError(f"output already exists: {existing[0]}")
+    if not overwrite and nifti_pair_complete(output_dir):
+        print(f"[skip] conversion {study_id}")
+        return t1_output, t2_output
+    temporary = clean_study_scratch(output_root, "convert", study_id)
+    remove_output(output_dir, output_root)
+    print(f"[compute] conversion {study_id}")
     grouped_df = group_dicom_files_in_dir(study_dir)
     t1_row, t2_row = select_t1_t2_rows(grouped_df, study_id)
     t1_filepaths = [str(study_dir / filename) for filename in t1_row.Filenames]
     t2_filepaths = [str(study_dir / filename) for filename in t2_row.Filenames]
 
-    output_dir.mkdir(parents=True, exist_ok=True)
-    reader = sitk.ImageSeriesReader()
-    reader.SetFileNames(t1_filepaths)
-    image = reader.Execute()
-    sitk.WriteImage(image, str(t1_output))
-    reader.SetFileNames(t2_filepaths)
-    image = reader.Execute()
-    sitk.WriteImage(image, str(t2_output))
+    temporary.mkdir(parents=True)
+    try:
+        reader = sitk.ImageSeriesReader()
+        for modality, filepaths in (("T1", t1_filepaths), ("T2", t2_filepaths)):
+            reader.SetFileNames(filepaths)
+            image = reader.Execute()
+            sitk.WriteImage(image, str(temporary / f"{modality}.nii.gz"))
+        if not nifti_pair_complete(temporary):
+            raise RuntimeError(f"conversion did not produce valid paired NIfTI: {study_id}")
+        os.replace(temporary, output_dir)
+    finally:
+        remove_output(temporary, output_root)
     return t1_output, t2_output
 
 
@@ -144,7 +164,12 @@ def convert_whitelist(
     """Convert every CSV-whitelisted Study in CSV order."""
     roots = read_folder_list(folder_list)
     study_ids = read_study_ids(csv_path, study_id_column)
+    for root in roots:
+        check_separate_roots(root, Path(output_root))
     for study_id in study_ids:
+        if not overwrite and nifti_pair_complete(Path(output_root) / study_id):
+            print(f"[skip] conversion {study_id}")
+            continue
         study_dir = resolve_study_dir(study_id, roots)
         convert_study(study_id, study_dir, output_root, overwrite=overwrite)
     return study_ids
@@ -156,7 +181,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--csv", required=True, help="CSV containing the Study-ID whitelist")
     parser.add_argument("--study-id-column", default="Study_ID", help="Study-ID column name; default: Study_ID")
     parser.add_argument("--output-root", required=True, help="Destination for <Study_ID>/T1.nii.gz and T2.nii.gz")
-    parser.add_argument("--overwrite", action="store_true", help="Replace existing T1/T2 outputs")
+    parser.add_argument("--overwrite", action="store_true", help="Force recomputation, including completed T1/T2 outputs")
     return parser
 
 
@@ -169,7 +194,7 @@ def main(argv: Iterable[str] | None = None) -> None:
         study_id_column=args.study_id_column,
         overwrite=args.overwrite,
     )
-    print(f"Converted {len(study_ids)} studies to {args.output_root}")
+    print(f"Conversion finished for {len(study_ids)} studies (computed or skipped) to {args.output_root}")
 
 
 if __name__ == "__main__":

@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import argparse
 import importlib.util
+import os
+import zipfile
 from collections.abc import Iterable, Sequence
 from pathlib import Path
 from types import ModuleType
@@ -11,6 +13,7 @@ from types import ModuleType
 import numpy as np
 import torch
 
+from ._resume import check_separate_roots, remove_output, validate_study_id
 from .preprocess_t1t2 import MODALITIES, default_brainiac_root, discover_study_ids
 
 BLOCK_NUMBERS = (3, 6, 9, 12)
@@ -178,6 +181,25 @@ def load_study_images(
     return images
 
 
+def embedding_complete(path: Path) -> bool:
+    if not path.is_file():
+        return False
+    try:
+        with np.load(path, allow_pickle=False) as data:
+            if set(data.files) != {"block_embed", "final_embed"}:
+                return False
+            for key, shape in (("block_embed", (2, 4, 768)), ("final_embed", (2, 768))):
+                array = data[key]
+                if array.shape != shape or array.dtype.names != POOLING_NAMES:
+                    return False
+                for pooling in POOLING_NAMES:
+                    if array[pooling].dtype != np.float32 or not np.isfinite(array[pooling]).all():
+                        return False
+    except (OSError, EOFError, ValueError, zipfile.BadZipFile):
+        return False
+    return True
+
+
 def save_embedding_npz(
     output_path: str | Path,
     block_embed: dict[str, np.ndarray],
@@ -206,7 +228,14 @@ def save_embedding_npz(
             packed[pooling] = value
         arrays[name] = packed
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    np.savez_compressed(output_path, **arrays)
+    temporary = output_path.with_name(output_path.name + ".tmp")
+    remove_output(temporary, output_path.parent)
+    try:
+        with temporary.open("wb") as stream:
+            np.savez_compressed(stream, **arrays)
+        os.replace(temporary, output_path)
+    finally:
+        remove_output(temporary, output_path.parent)
     return output_path
 
 
@@ -222,22 +251,26 @@ def extract_whitelist_for_checkpoint(
     brainiac_root: str | Path | None = None,
     overwrite: bool = False,
 ) -> None:
-    encoder = load_encoder(
-        model_kind,
-        checkpoint_path,
-        brainiac_checkpoint=brainiac_checkpoint,
-        device=device,
-        brainiac_root=brainiac_root,
-    )
+    processed_root, output_root = Path(processed_root).resolve(), Path(output_root).resolve()
+    check_separate_roots(processed_root, output_root)
+    encoder = None
     for study_id in study_ids:
+        validate_study_id(study_id)
+        output_path = output_root / f"{study_id}.npz"
+        if not overwrite and embedding_complete(output_path):
+            print(f"[skip] {model_kind} embedding {study_id}")
+            continue
+        remove_output(output_path.with_name(output_path.name + ".tmp"), output_root)
+        remove_output(output_path, output_root)
+        print(f"[compute] {model_kind} embedding {study_id}")
+        if encoder is None:
+            encoder = load_encoder(
+                model_kind, checkpoint_path, brainiac_checkpoint=brainiac_checkpoint,
+                device=device, brainiac_root=brainiac_root,
+            )
         images = load_study_images(study_id, processed_root, brainiac_root=brainiac_root)
         block_embed, final_embed = extract_selected_embeddings(encoder, images, device=device)
-        save_embedding_npz(
-            Path(output_root) / f"{study_id}.npz",
-            block_embed,
-            final_embed,
-            overwrite=overwrite,
-        )
+        save_embedding_npz(output_path, block_embed, final_embed)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -250,7 +283,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--brainiac-checkpoint", help="Required for brainage and mci fine-tuned checkpoints")
     parser.add_argument("--brainiac-root", default=str(default_brainiac_root()))
     parser.add_argument("--device", default="cuda:0" if torch.cuda.is_available() else "cpu")
-    parser.add_argument("--overwrite", action="store_true")
+    parser.add_argument("--overwrite", action="store_true", help="Force recomputation, including completed NPZ files")
     return parser
 
 
@@ -268,7 +301,7 @@ def main(argv: Iterable[str] | None = None) -> None:
         brainiac_root=args.brainiac_root,
         overwrite=args.overwrite,
     )
-    print(f"Saved {len(study_ids)} {args.model_kind} embedding files to {args.output_root}")
+    print(f"Finished {len(study_ids)} {args.model_kind} embedding files (computed or skipped) to {args.output_root}")
 
 
 if __name__ == "__main__":

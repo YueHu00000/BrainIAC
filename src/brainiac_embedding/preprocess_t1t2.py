@@ -6,9 +6,16 @@ import argparse
 import os
 import subprocess
 import sys
-import tempfile
 from collections.abc import Iterable, Sequence
 from pathlib import Path
+
+from ._resume import (
+    check_separate_roots,
+    clean_study_scratch,
+    nifti_pair_complete,
+    remove_output,
+    validate_study_id,
+)
 
 MODALITIES = ("T1", "T2")
 
@@ -25,7 +32,7 @@ def discover_study_ids(root: str | Path) -> list[str]:
     """
     root = Path(root)
     studies = sorted(path.name for path in root.iterdir()
-                     if path.is_dir() and path.name != ".preprocess_tmp")
+                     if path.is_dir() and path.name not in (".preprocess_tmp", ".convert_tmp"))
     if not studies:
         raise ValueError(f"no Study directories found in {root}")
     for study_id in studies:
@@ -59,15 +66,20 @@ def preprocess_study(
     so the upstream ``split('/')`` filename parsing works on Windows. The
     bridge then calls the unchanged upstream ``main`` imaging implementation.
     """
+    validate_study_id(study_id)
     raw_root = Path(raw_root).resolve()
     processed_root = Path(processed_root).resolve()
-    _expected_raw_paths(raw_root, study_id)
+    check_separate_roots(raw_root, processed_root)
 
     destination_dir = processed_root / study_id
     destinations = {modality: destination_dir / f"{modality}.nii.gz" for modality in MODALITIES}
-    existing = [path for path in destinations.values() if path.exists()]
-    if existing and not overwrite:
-        raise FileExistsError(f"processed output already exists: {existing[0]}")
+    if not overwrite and nifti_pair_complete(destination_dir):
+        print(f"[skip] preprocessing {study_id}")
+        return destinations["T1"], destinations["T2"]
+    temporary_output = clean_study_scratch(processed_root, "preprocess", study_id)
+    remove_output(destination_dir, processed_root)
+    _expected_raw_paths(raw_root, study_id)
+    print(f"[compute] preprocessing {study_id}")
 
     repo_root = Path(brainiac_root).resolve() if brainiac_root is not None else default_brainiac_root()
     preprocessing_dir = repo_root / "src" / "preprocessing"
@@ -81,41 +93,26 @@ def preprocess_study(
     if not bridge.is_file():
         raise FileNotFoundError(f"BrainIAC preprocessing bridge does not exist: {bridge}")
 
-    processed_root.mkdir(parents=True, exist_ok=True)
-    temporary_parent = processed_root / ".preprocess_tmp"
-    temporary_parent.mkdir(exist_ok=True)
+    temporary_output.mkdir(parents=True)
     executable = str(python_executable or sys.executable)
-
     try:
-        with tempfile.TemporaryDirectory(prefix=f"{study_id}_", dir=str(temporary_parent)) as temporary:
-            temporary_output = Path(temporary)
-            command = [
-                executable,
-                str(bridge),
-                "--brainiac-root",
-                repo_root.as_posix(),
-                "--temp_img",
-                template.as_posix(),
-                "--input_dir",
-                (raw_root / study_id).as_posix(),
-                "--output_dir",
-                temporary_output.as_posix(),
-            ]
-            subprocess.run(command, cwd=str(preprocessing_dir), check=True)
-
-            generated = {
-                modality: temporary_output / f"{modality}_0000.nii.gz" for modality in MODALITIES
-            }
-            missing = [path for path in generated.values() if not path.is_file()]
-            if missing:
-                raise RuntimeError(f"BrainIAC preprocessing did not produce: {missing[0]}")
-
-            destination_dir.mkdir(parents=True, exist_ok=True)
-            for modality in MODALITIES:
-                os.replace(str(generated[modality]), str(destinations[modality]))
+        command = [
+            executable, str(bridge), "--brainiac-root", repo_root.as_posix(),
+            "--temp_img", template.as_posix(),
+            "--input_dir", (raw_root / study_id).as_posix(),
+            "--output_dir", temporary_output.as_posix(),
+        ]
+        subprocess.run(command, cwd=str(preprocessing_dir), check=True)
+        if not nifti_pair_complete(temporary_output, suffix="_0000"):
+            raise RuntimeError(f"BrainIAC preprocessing did not produce valid T1/T2: {study_id}")
+        # Publish only the pair, never registration intermediates or masks.
+        paired = temporary_output / "paired"
+        paired.mkdir()
+        for modality in MODALITIES:
+            os.replace(temporary_output / f"{modality}_0000.nii.gz", paired / f"{modality}.nii.gz")
+        os.replace(paired, destination_dir)
     finally:
-        if temporary_parent.is_dir() and not any(temporary_parent.iterdir()):
-            temporary_parent.rmdir()
+        remove_output(temporary_output, processed_root)
 
     return destinations["T1"], destinations["T2"]
 
@@ -147,7 +144,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--processed-root", required=True, help="Destination root for processed nested NIfTI")
     parser.add_argument("--brainiac-root", default=str(default_brainiac_root()), help="BrainIAC repository root")
     parser.add_argument("--python", default=sys.executable, help="Python executable used for the original preprocessing CLI")
-    parser.add_argument("--overwrite", action="store_true", help="Replace existing processed T1/T2 files")
+    parser.add_argument("--overwrite", action="store_true", help="Force recomputation, including completed processed T1/T2")
     return parser
 
 
@@ -162,7 +159,7 @@ def main(argv: Iterable[str] | None = None) -> None:
         python_executable=args.python,
         overwrite=args.overwrite,
     )
-    print(f"Preprocessed {len(study_ids)} studies to {args.processed_root}")
+    print(f"Preprocessing finished for {len(study_ids)} studies (computed or skipped) to {args.processed_root}")
 
 
 if __name__ == "__main__":
