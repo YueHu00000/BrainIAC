@@ -1,4 +1,4 @@
-"""Extract block 3/6/9/12 and final token-0 BrainIAC embeddings."""
+"""Extract block 3/6/9/12 and final token-0 and mean-pooled BrainIAC embeddings."""
 
 from __future__ import annotations
 
@@ -11,13 +11,14 @@ from types import ModuleType
 import numpy as np
 import torch
 
-from .preprocess_t1t2 import MODALITIES, default_brainiac_root
+from .preprocess_t1t2 import MODALITIES, default_brainiac_root, discover_study_ids
 
 BLOCK_NUMBERS = (3, 6, 9, 12)
 BLOCK_INDICES = tuple(number - 1 for number in BLOCK_NUMBERS)
 EXPECTED_INPUT_SHAPE = (2, 1, 96, 96, 96)
 EXPECTED_TOKEN_COUNT = 216
 EXPECTED_HIDDEN_SIZE = 768
+POOLING_NAMES = ("token0", "mean_pooling")
 MODEL_KINDS = ("backbone", "brainage", "mci")
 
 
@@ -101,8 +102,8 @@ def extract_selected_embeddings(
     images: torch.Tensor,
     *,
     device: str | torch.device | None = None,
-) -> tuple[np.ndarray, np.ndarray]:
-    """Return ``block_embed [2,4,768]`` and ``final_embed [2,768]``."""
+) -> tuple[dict[str, np.ndarray], dict[str, np.ndarray]]:
+    """Return token0 and mean over spatial tokens 1: for blocks and final LN."""
     if tuple(images.shape) != EXPECTED_INPUT_SHAPE:
         raise ValueError(f"images must have shape {EXPECTED_INPUT_SHAPE}, found {tuple(images.shape)}")
     if not torch.isfinite(images).all():
@@ -132,17 +133,20 @@ def extract_selected_embeddings(
                 f"hidden state {index + 1} must have shape {expected_token_shape}, found {tuple(state.shape)}"
             )
 
-    block_tensor = torch.stack([hidden_states[index][:, 0, :] for index in BLOCK_INDICES], dim=1)
-    final_tensor = final_tokens[:, 0, :]
-    block_embed = block_tensor.detach().to(device="cpu", dtype=torch.float32).numpy()
-    final_embed = final_tensor.detach().to(device="cpu", dtype=torch.float32).numpy()
-
-    if block_embed.shape != (2, 4, EXPECTED_HIDDEN_SIZE):
-        raise ValueError(f"block_embed has unexpected shape {block_embed.shape}")
-    if final_embed.shape != (2, EXPECTED_HIDDEN_SIZE):
-        raise ValueError(f"final_embed has unexpected shape {final_embed.shape}")
-    if not np.isfinite(block_embed).all() or not np.isfinite(final_embed).all():
-        raise ValueError("encoder produced NaN or Inf embeddings")
+    block_embed = {}
+    final_embed = {}
+    for pooling in POOLING_NAMES:
+        if pooling == "token0":
+            block_tensor = torch.stack([hidden_states[i][:, 0, :] for i in BLOCK_INDICES], dim=1)
+            final_tensor = final_tokens[:, 0, :]
+        else:
+            block_tensor = torch.stack([hidden_states[i][:, 1:, :].mean(dim=1)
+                                        for i in BLOCK_INDICES], dim=1)
+            final_tensor = final_tokens[:, 1:, :].mean(dim=1)
+        block_embed[pooling] = block_tensor.detach().to(device="cpu", dtype=torch.float32).numpy()
+        final_embed[pooling] = final_tensor.detach().to(device="cpu", dtype=torch.float32).numpy()
+        if not np.isfinite(block_embed[pooling]).all() or not np.isfinite(final_embed[pooling]).all():
+            raise ValueError("encoder produced NaN or Inf embeddings")
     return block_embed, final_embed
 
 
@@ -176,26 +180,33 @@ def load_study_images(
 
 def save_embedding_npz(
     output_path: str | Path,
-    block_embed: np.ndarray,
-    final_embed: np.ndarray,
+    block_embed: dict[str, np.ndarray],
+    final_embed: dict[str, np.ndarray],
     *,
     overwrite: bool = False,
 ) -> Path:
-    """Save exactly the two requested float32 arrays, without metadata or hashes."""
+    """Save two structured arrays with float32 pooling fields; no pickle or metadata."""
     output_path = Path(output_path)
     if output_path.exists() and not overwrite:
         raise FileExistsError(f"embedding output already exists: {output_path}")
-    block_embed = np.asarray(block_embed, dtype=np.float32)
-    final_embed = np.asarray(final_embed, dtype=np.float32)
-    if block_embed.shape != (2, 4, EXPECTED_HIDDEN_SIZE):
-        raise ValueError(f"block_embed must have shape (2, 4, 768), found {block_embed.shape}")
-    if final_embed.shape != (2, EXPECTED_HIDDEN_SIZE):
-        raise ValueError(f"final_embed must have shape (2, 768), found {final_embed.shape}")
-    if not np.isfinite(block_embed).all() or not np.isfinite(final_embed).all():
-        raise ValueError("embeddings contain NaN or Inf")
-
+    arrays = {}
+    for name, embeddings, shape in (
+        ("block_embed", block_embed, (2, 4, EXPECTED_HIDDEN_SIZE)),
+        ("final_embed", final_embed, (2, EXPECTED_HIDDEN_SIZE)),
+    ):
+        if set(embeddings) != set(POOLING_NAMES):
+            raise ValueError(f"{name} must contain exactly {POOLING_NAMES}")
+        packed = np.empty(shape, dtype=[(pooling, np.float32) for pooling in POOLING_NAMES])
+        for pooling in POOLING_NAMES:
+            value = np.asarray(embeddings[pooling], dtype=np.float32)
+            if value.shape != shape:
+                raise ValueError(f"{name}.{pooling} must have shape {shape}, found {value.shape}")
+            if not np.isfinite(value).all():
+                raise ValueError(f"{name}.{pooling} contains NaN or Inf")
+            packed[pooling] = value
+        arrays[name] = packed
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    np.savez_compressed(output_path, block_embed=block_embed, final_embed=final_embed)
+    np.savez_compressed(output_path, **arrays)
     return output_path
 
 
@@ -230,8 +241,8 @@ def extract_whitelist_for_checkpoint(
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Extract BrainIAC block 3/6/9/12 and final token-0 embeddings")
-    parser.add_argument("--study-id", action="append", required=True, help="Study ID; repeat for multiple studies")
+    parser = argparse.ArgumentParser(description="Extract BrainIAC block 3/6/9/12 and final token-0 and mean-pooled embeddings")
+    parser.add_argument("--study-id", action="append", help="Optional subset; default: all Study directories in the input root")
     parser.add_argument("--processed-root", required=True, help="Root containing nested processed T1/T2 NIfTI")
     parser.add_argument("--output-root", required=True, help="Destination for one <Study_ID>.npz per Study")
     parser.add_argument("--model-kind", choices=MODEL_KINDS, required=True)
@@ -245,8 +256,9 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: Iterable[str] | None = None) -> None:
     args = build_parser().parse_args(argv)
+    study_ids = args.study_id if args.study_id is not None else discover_study_ids(args.processed_root)
     extract_whitelist_for_checkpoint(
-        args.study_id,
+        study_ids,
         args.processed_root,
         args.output_root,
         model_kind=args.model_kind,
@@ -256,7 +268,7 @@ def main(argv: Iterable[str] | None = None) -> None:
         brainiac_root=args.brainiac_root,
         overwrite=args.overwrite,
     )
-    print(f"Saved {len(args.study_id)} {args.model_kind} embedding files to {args.output_root}")
+    print(f"Saved {len(study_ids)} {args.model_kind} embedding files to {args.output_root}")
 
 
 if __name__ == "__main__":
