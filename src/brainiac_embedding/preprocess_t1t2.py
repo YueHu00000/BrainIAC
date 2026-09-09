@@ -17,6 +17,25 @@ def default_brainiac_root() -> Path:
     return Path(__file__).resolve().parents[2]
 
 
+def discover_study_ids(root: str | Path) -> list[str]:
+    """Discover the direct Study directories produced by conversion.
+
+    The preprocessing scratch directory is reserved, never a Study.
+    Validate both modalities before starting any expensive processing.
+    """
+    root = Path(root)
+    studies = sorted(path.name for path in root.iterdir()
+                     if path.is_dir() and path.name != ".preprocess_tmp")
+    if not studies:
+        raise ValueError(f"no Study directories found in {root}")
+    for study_id in studies:
+        for modality in MODALITIES:
+            path = root / study_id / f"{modality}.nii.gz"
+            if not path.is_file():
+                raise FileNotFoundError(f"paired NIfTI does not exist: {path}")
+    return studies
+
+
 def _expected_raw_paths(raw_root: Path, study_id: str) -> dict[str, Path]:
     paths = {modality: raw_root / study_id / f"{modality}.nii.gz" for modality in MODALITIES}
     for path in paths.values():
@@ -123,7 +142,7 @@ def preprocess_whitelist(
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Run original BrainIAC preprocessing for nested T1/T2 studies")
-    parser.add_argument("--study-id", action="append", required=True, help="Study ID; repeat for multiple studies")
+    parser.add_argument("--study-id", action="append", help="Optional subset; default: all Study directories in the input root")
     parser.add_argument("--raw-root", required=True, help="Root containing <Study_ID>/T1.nii.gz and T2.nii.gz")
     parser.add_argument("--processed-root", required=True, help="Destination root for processed nested NIfTI")
     parser.add_argument("--brainiac-root", default=str(default_brainiac_root()), help="BrainIAC repository root")
@@ -134,15 +153,16 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: Iterable[str] | None = None) -> None:
     args = build_parser().parse_args(argv)
+    study_ids = args.study_id if args.study_id is not None else discover_study_ids(args.raw_root)
     preprocess_whitelist(
-        args.study_id,
+        study_ids,
         args.raw_root,
         args.processed_root,
         brainiac_root=args.brainiac_root,
         python_executable=args.python,
         overwrite=args.overwrite,
     )
-    print(f"Preprocessed {len(args.study_id)} studies to {args.processed_root}")
+    print(f"Preprocessed {len(study_ids)} studies to {args.processed_root}")
 
 
 if __name__ == "__main__":
