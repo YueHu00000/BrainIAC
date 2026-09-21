@@ -12,7 +12,6 @@ from pathlib import Path
 from ._resume import (
     check_separate_roots,
     clean_study_scratch,
-    nifti_pair_complete,
     remove_output,
     validate_study_id,
 )
@@ -67,15 +66,16 @@ def preprocess_study(
     bridge then calls the unchanged upstream ``main`` imaging implementation.
     """
     validate_study_id(study_id)
+    destination_dir = Path(processed_root) / study_id
+    destinations = {modality: destination_dir / f"{modality}.nii.gz" for modality in MODALITIES}
+    if not overwrite and all(path.is_file() for path in destinations.values()):
+        print(f"[skip] preprocessing {study_id}")
+        return destinations["T1"], destinations["T2"]
     raw_root = Path(raw_root).resolve()
     processed_root = Path(processed_root).resolve()
     check_separate_roots(raw_root, processed_root)
-
     destination_dir = processed_root / study_id
     destinations = {modality: destination_dir / f"{modality}.nii.gz" for modality in MODALITIES}
-    if not overwrite and nifti_pair_complete(destination_dir):
-        print(f"[skip] preprocessing {study_id}")
-        return destinations["T1"], destinations["T2"]
     temporary_output = clean_study_scratch(processed_root, "preprocess", study_id)
     remove_output(destination_dir, processed_root)
     _expected_raw_paths(raw_root, study_id)
@@ -103,8 +103,8 @@ def preprocess_study(
             "--output_dir", temporary_output.as_posix(),
         ]
         subprocess.run(command, cwd=str(preprocessing_dir), check=True)
-        if not nifti_pair_complete(temporary_output, suffix="_0000"):
-            raise RuntimeError(f"BrainIAC preprocessing did not produce valid T1/T2: {study_id}")
+        if not all((temporary_output / f"{modality}_0000.nii.gz").is_file() for modality in MODALITIES):
+            raise RuntimeError(f"BrainIAC preprocessing did not produce both T1/T2 files: {study_id}")
         # Publish only the pair, never registration intermediates or masks.
         paired = temporary_output / "paired"
         paired.mkdir()
