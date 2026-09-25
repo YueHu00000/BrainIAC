@@ -1,12 +1,15 @@
 """Synthetic cohort checks; no patient data, pixels or external services."""
 
 import importlib
+import json
+import subprocess
 import sys
 import tempfile
 import unittest
 from pathlib import Path
 
 import numpy as np
+import pandas as pd
 from pydicom.dataset import Dataset, FileDataset, FileMetaDataset
 from pydicom.uid import ExplicitVRLittleEndian, MRImageStorage, generate_uid
 
@@ -169,6 +172,47 @@ class CohortTests(unittest.TestCase):
         (other / "EMPTY").mkdir()
         self.assertTrue(all(row["status"] == "study_ambiguous"
                             for row in inspect_study("EMPTY", [self.root, other])))
+
+    def test_cli_studies_in_different_roots_default_and_explicit_folder_list(self):
+        roots = [self.root / "part1", self.root / "part2"]
+        for root, study, count in zip(roots, ("0001", "0002"), (3, 5)):
+            directory = root / study
+            directory.mkdir(parents=True)
+            for modality, number in (("T1", 1), ("T2", 2)):
+                for index in range(count):
+                    self.dataset(z=7 * index, instance=index + 1, number=number,
+                                 description=modality).save_as(
+                        directory / f"{study}_{modality}_{index}.dcm", enforce_file_format=True)
+        csv_path = self.root / "studies.csv"
+        csv_path.write_text("Study_ID\n0001\n0002\n", encoding="utf-8")
+        folder_list = self.root / "folder_address.txt"
+        folder_list.write_text("\n".join(map(str, roots)) + "\n", encoding="utf-8")
+        script = Path(__file__).with_name("summarize_dicom_t1t2.py")
+        for explicit in (False, True):
+            output = self.root / ("reports_explicit" if explicit else "reports_default")
+            command = [sys.executable, "-B", str(script), "--csv", str(csv_path),
+                       "--output-dir", str(output)]
+            if explicit:
+                folder_list.rename(self.root / "custom_roots.txt")
+                command += ["--folder-list", str(self.root / "custom_roots.txt")]
+            completed = subprocess.run(command, cwd=self.root, capture_output=True, text=True)
+            self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)
+            self.assertEqual({path.name for path in output.iterdir()},
+                             {"selected_series.csv", "flagged_series.csv", "distribution_summary.csv", "summary.txt"})
+            rows = pd.read_csv(output / "selected_series.csv", dtype={"study_id": str})
+            self.assertEqual(rows.study_id.tolist(), ["0001", "0001", "0002", "0002"])
+            self.assertEqual(rows.status.tolist(), ["selected"] * 4)
+            self.assertEqual(rows.file_count.tolist(), [3, 3, 5, 5])
+            self.assertEqual(rows.unique_slice_count.tolist(), [3, 3, 5, 5])
+            for row in rows.itertuples():
+                expected_root = roots[int(row.study_id) - 1]
+                self.assertEqual(Path(row.study_directory), expected_root / row.study_id)
+                self.assertTrue(all((Path(row.study_directory) / name).is_file()
+                                    for name in json.loads(row.file_names)))
+            distribution = pd.read_csv(output / "distribution_summary.csv")
+            counts = distribution[distribution.metric == "file_count"]
+            self.assertEqual(counts.n_valid.tolist(), [2, 2])
+            self.assertEqual(counts["median"].tolist(), [4, 4])
 
     def test_distribution_equal_series_weight_and_missing_denominator(self):
         rows = []

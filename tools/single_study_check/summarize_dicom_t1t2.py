@@ -306,7 +306,8 @@ def write_csv(rows, path):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--csv", required=True, type=Path, help="Target study CSV (all rows included)")
-    parser.add_argument("--folder-list", required=True, type=Path, help="UTF-8 TXT: one DICOM parent directory per line")
+    parser.add_argument("--folder-list", default=Path("folder_address.txt"), type=Path,
+                        help="UTF-8 TXT: one DICOM root per line (default: ./folder_address.txt); each study is in one root/Study_ID")
     parser.add_argument("--study-id-column", default="Study_ID", help="CSV ID column, default Study_ID; use STUDY_ID if needed")
     parser.add_argument("--output-dir", required=True, type=Path, help="New output directory; existing directories are not overwritten")
     args = parser.parse_args()

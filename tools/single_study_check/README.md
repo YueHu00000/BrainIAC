@@ -70,7 +70,7 @@ STUDY_0002
 
 允许其他列，程序只使用 ID 列。默认列名 `Study_ID`；若是 `STUDY_ID`，加 `--study-id-column STUDY_ID`。ID 以字符串读取，保留前导零。空 ID 或重复 ID 会报错，不会静默重复统计。
 
-根目录列表，例如 `dicom_roots.txt`，每行一个目录，不加引号：
+根目录列表 `folder_address.txt`，与转换程序使用同一份列表，每行一个目录，不加引号（建议使用绝对路径）：
 
 ```text
 /data/TUFTS_MRI_Training_Dataset_Part1
@@ -79,11 +79,28 @@ STUDY_0002
 
 程序在这些目录下查找 `<根目录>/<Study_ID>`，与现有转换程序一致。根目录列表中的相对路径相对于 TXT 所在目录解析。空行忽略；根目录必须存在且不能重复。
 
+不同 studies 可以分布在不同根目录中，但每个 study 的全部 DICOM 文件应完整地位于一个 `<根目录>/<Study_ID>` 内。例如：
+
+```text
+/data/TUFTS_MRI_Training_Dataset_Part1/STUDY_0001/*.dcm
+/data/TUFTS_MRI_Training_Dataset_Part2/STUDY_0002/*.dcm
+```
+
+程序逐个 study 搜索全部根目录，不会把不同 studies 的文件混合。跨根目录文件名是否相同不影响定位；同一 Study_ID 出现在多个根目录中仍报告 `study_ambiguous`。仅列出根目录，不需要逐个列出 study 子目录或 DICOM 文件。
+
 在脚本目录运行（下列命令在 PowerShell 和 Linux shell 中都可写成一行）：
 
 ```bash
-python summarize_dicom_t1t2.py --csv "/data/target_studies.csv" --folder-list "/data/dicom_roots.txt" --output-dir "/reports/dicom_t1t2_statistics_v1"
+python summarize_dicom_t1t2.py --csv "/data/target_studies.csv" --folder-list "/data/folder_address.txt" --output-dir "/reports/dicom_t1t2_statistics_v1"
 ```
+
+若 `folder_address.txt` 位于运行命令时的当前工作目录，可省略 `--folder-list`：
+
+```bash
+python summarize_dicom_t1t2.py --csv "/data/target_studies.csv" --output-dir "/reports/dicom_t1t2_statistics_v1"
+```
+
+默认列表文件相对于**当前工作目录**定位，不是脚本目录。仍可用 `--folder-list` 指定任何其他文件名或位置。列表内若使用相对根目录路径，统计程序相对于 TXT 目录解析，而当前转换程序相对于工作目录解析；使用同一份绝对路径列表可避免这一区别。
 
 `--output-dir` 必须是一个尚不存在的新目录，且位于 DICOM 根目录之外。再次运行请使用 `v2` 等新名字。报告期间每 100 个 studies 显示一次进度；不改动源 DICOM 或原有结果。
 
