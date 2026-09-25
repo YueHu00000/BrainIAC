@@ -1,0 +1,2 @@
+# numpy and nibabel are already in requirements-vit-survival*.txt.
+pydicom==3.0.1
