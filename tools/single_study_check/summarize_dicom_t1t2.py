@@ -34,7 +34,7 @@ def numbers(value, size):
     return array if array.size == size and np.isfinite(array).all() else None
 
 
-def summarize_series(items):
+def summarize_series(items, include_frame_positions=False):
     result = {metric: np.nan for metric in METRICS}
     flags = []
     result["flags"] = flags
@@ -143,6 +143,8 @@ def summarize_series(items):
             normal /= np.linalg.norm(normal)
             offsets = np.asarray(positions) - positions[0]
             projected = offsets @ normal
+            if include_frame_positions:
+                result["frame_positions_mm"] = np.asarray(positions).tolist()
             shift = np.linalg.norm(offsets - projected[:, None] * normal, axis=1)
             result["max_in_plane_shift_mm"] = float(shift.max())
             if shift.max() > POSITION_TOL_MM:
@@ -179,7 +181,7 @@ def summarize_series(items):
     return result
 
 
-def inspect_study(study_id, roots):
+def inspect_study(study_id, roots, include_frame_positions=False):
     rows = [{"study_id": study_id, "modality": modality, "status": "pending", "flags": [],
              "excluded_series_number": EXCEPTIONS.get(study_id, "none"), "pair_selected": False,
              **{metric: np.nan for metric in METRICS}} for modality in ("T1", "T2")]
@@ -219,7 +221,8 @@ def inspect_study(study_id, roots):
             continue
         chosen = candidates.loc[candidates.SeriesNumber.idxmax()]
         row.update(series_number=int(chosen.SeriesNumber), series_description=chosen.SeriesDescription)
-        row.update(summarize_series([(directory / name, headers[name]) for name in chosen.Filename]))
+        row.update(summarize_series([(directory / name, headers[name]) for name in chosen.Filename],
+                                   include_frame_positions=include_frame_positions))
         row["status"] = "selected"
         if (candidates.SeriesNumber == chosen.SeriesNumber).sum() > 1:
             row["flags"].append("max_series_number_tie")
