@@ -1,5 +1,7 @@
 # 单个 study 的 DICOM / raw NIfTI 检查
 
+新增：[`README_summary_v2.md`](README_summary_v2.md) 介绍基于现有 `selected_series.csv` 的覆盖/层位置偏差统计、重复层面单独检查，以及两套对应 CSV（无 Study ID / 末列仅列异常 Study ID）。
+
 两个单样本检查脚本，以及一个 DICOM 队列统计脚本。Python 3.10+，只读取源影像。无需 GPU、SimpleITK 或 ANTs。
 
 GitHub 发布位置：`YueHu00000/BrainIAC` 仓库的 `tools/single_study_check/`。在仓库根目录运行 `cd tools/single_study_check` 后，即可使用下列命令；工作区原始文件保留在 `E:\codex\MRI_project\code\single_study_check`。
