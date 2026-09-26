@@ -96,3 +96,37 @@ python -B -m unittest -v test_summary_v2.py
 14 项合成测试覆盖位置偏差、严格阈值、反向/非单调顺序、未知值、多帧边界、整 study 排除、非单调质量分布、辅助检查、空 cohort、ID 字符串保留、两个 CLI、重复 echo/SOP、Enhanced MR 元数据，以及两套 CSV 共同列完全一致、末列异常 ID 与对应检查匹配。
 
 当前本地只有原真实 `summary.txt`，没有真实 cohort 的 `selected_series.csv`。因此程序已用合成数据验证，但尚未生成真实约一万 study 的 v2 结果。请使用服务器上的原 CSV 运行上述命令。
+
+## 低覆盖 study 的临床信息清单（2026-09-26）
+
+新增 `export_low_coverage_clinical.py`，读取原始 `selected_series.csv` 和转换程序使用的 `labels.csv`，输出一份含 Study ID 的临床追查 CSV。与 `summarize_dicom_t1t2_v2.py` 放在同一个目录，使用同一环境，无新增依赖。
+
+```bash
+python export_low_coverage_clinical.py --selected-csv /reports/selected_series.csv --labels-csv /data/labels.csv --output-csv /reports/low_coverage_clinical.csv
+```
+
+- 默认阈值为 100 mm，可用 `--coverage-threshold-mm 100` 指定。任一已选中模态的有效非负 coverage 严格小于阈值，即纳入整个 study；等于阈值不触发。
+- 识别 Summary_v2 排除的 study：任一模态 `duplicate_plane_count > 0` 或带 `repeated_slice_plane` 标记。本临床清单将这些 study **直接纳入，不受 coverage 阈值或其缺失影响**，并在输出 `Study_ID` 前加上 `excluded_`；不需要额外输入排除 CSV，不硬编码 ID。Summary_v2 主统计仍采用原排除规则。
+- 输入必须是原始含 `study_id` 的统计明细，每个 study 有 T1/T2 两行。`summary_v2.txt` 或无 ID 的 CSV 无法代替此输入；文件是否叫 `selected_studies.csv` 不影响读取，实际列结构须符合原明细。
+- 每个纳入的 study 输出一行，按原统计明细中的 study 首次出现顺序排列。即使只 T1 低覆盖，也保留该 study 的 T2 指标。
+- 临床信息按 `selected_series.csv` 的 `study_id` 与 `labels.csv` 的 `Study_ID` 对应，去掉 ID 首尾空格，保留前导零和字面值 `NA`。重复 ID 会报错，避免任意选取某一行或产生多对多匹配。
+- 重复层面 study 先用原始 ID 匹配临床信息，再给输出 ID 加前缀。例如虚构 ID `DEMO_001` 输出为 `excluded_DEMO_001`。每个 study 只输出一次，即使它同时符合低 coverage 条件。
+- 按位置删除 `labels.csv` 的第一列和最后一列，保留中间临床列的名称、顺序和值。`Study_ID` 单独放在首列，即使它位于被删除的列；若它在中间，则不重复输出。
+
+输出列依次为：
+
+```text
+Study_ID, [labels.csv 中间临床列], T1_unique_slice_count, T2_unique_slice_count, T1_coverage_mm, T2_coverage_mm
+```
+
+输出带表头及 UTF-8 BOM。层数来自 `unique_slice_count`；coverage 来自原统计的 `coverage_mm`，单位 mm，分别保留两模态值，不取平均或最小值。缺失的影像数值写为 `unknown`。纳入清单但临床信息未匹配的 study 仍输出，其临床单元格留空，终端的 `unmatched_labels` 报告未匹配数量。
+
+终端报告输入 study 数、直接纳入的重复层面 study 数（`included_repeated_studies`）、非重复层面 study 总数（`nonrepeated_studies`）、其中低覆盖 study 数（`low_coverage_studies`）及 T1/T2 各自低覆盖序列数。`output_studies` 等于低覆盖 study 数加直接纳入的重复层面 study 数。两个模态的低覆盖数量不能直接相加作为 study 数。没有符合条件的 study 时，仍输出只有表头的 CSV。目标文件必须不存在，以免覆盖既有清单。
+
+当前已收到真实 `summary_v2.txt`，但本地尚无真实 cohort 的原始统计 CSV 和 `labels.csv`；实际临床清单须在服务器运行生成。同一份输入数据及默认阈值下，按现有报告预计输出 **401 个 study**：非重复层面的 T1 低覆盖 384 个、T2 低覆盖 140 个，合并去重为 400 个，再加直接纳入的 1 个重复层面 study。这是报告推导的核对数，不是本程序已运行真实数据得到的结果。
+
+```bash
+python -B -m unittest -v test_export_low_coverage_clinical.py
+```
+
+6 项合成测试覆盖筛选与去重、重复层面 study 无条件纳入（coverage 高于阈值或缺失）、原 ID 匹配后加前缀、列顺序、缺失与无效值、空结果、自定义阈值、命令行输出和不覆盖已有文件。
