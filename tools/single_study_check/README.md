@@ -1,5 +1,7 @@
 # 单个 study 的 DICOM / raw NIfTI 检查
 
+T1/T2 同文件检查：[`README_same_files.md`](README_same_files.md) 介绍 `check_dicom_t1t2_same_files.py`，输入 labels CSV 和 `--folder-list`，逐个 study 核对两边实际选中的文件集合是否相同。
+
 新增：[`README_summary_v2.md`](README_summary_v2.md) 介绍基于现有 `selected_series.csv` 的覆盖/层位置偏差统计、重复层面单独检查，以及两套对应 CSV（无 Study ID / 末列仅列异常 Study ID）。
 
 低覆盖临床清单：`export_low_coverage_clinical.py` 将任一模态 coverage < 100 mm 的 study 与 `labels.csv` 匹配，另外直接纳入重复层面 study，并给其输出 ID 加上 `excluded_` 前缀；运行方法见同一说明文档的“低覆盖 study 的临床信息清单”。
