@@ -169,3 +169,39 @@ python -m unittest discover -s "$BRAIN_REPO/tests" -p 'test_brainiac_embedding_*
 2026-09-29 本地验证：新增 12 项测试、原有 34 项 BrainIAC embedding 测试通过；Ruff、编译检查通过。合成拆分的 T1/T2_acq1/T2_acq2 均为 23 层、7 mm spacing，像素顺序和首末位置正确。测试环境为 Python 3.10、PyTorch 2.13.0+cpu、MONAI 1.3.2、NumPy 2.2.6、SimpleITK 2.3.1、pydicom 3.0.1；缺少的 nibabel 5.3.2 仅安装到 `E:\codex\MRI_project\.codex_tmp\brainiac_single_study_deps` 并通过测试进程的 PYTHONPATH 引入，没有修改既有环境。该环境不是服务器锁定依赖的验收。
 
 真实 `R01_Study_002904` 的 DICOM、三个正式 checkpoint 的完整运行、配准/HD-BET 人工 QC 仍需在数据所在服务器执行。
+
+## 9. 按 coverage 转移已有 embedding
+
+`move_low_coverage_embeddings.py` 是独立的轻量工具，只需要 Python 标准库。
+读取 `export_low_coverage_clinical.py` 输出 CSV 的 `Study_ID`、`T1_coverage_mm`、`T2_coverage_mm` 三列。
+默认条件是 **T1 coverage < 101 mm 或 T2 coverage < 101 mm**；等于阈值不移动。
+
+先预览（Linux Bash 示例；Python 环境不要求安装模型依赖）：
+
+```bash
+python "$SINGLE_DIR/move_low_coverage_embeddings.py" \
+  --csv /path/to/low_coverage_clinical.csv \
+  --threshold 101 \
+  --embedding-dir /path/to/brainiac_embeddings \
+  --transfer-dir /path/to/low_coverage_brainiac_embeddings \
+  --dry-run
+```
+
+确认清单后去掉 `--dry-run`，执行相同命令即可实际移动。vit_survival 使用同一脚本，把输入和转移目录改为对应路径即可；两种模型应使用各自的转移目录。
+
+- 输入可为单模型目录，也可为包含多个模型/归一化分支的 **embedding 根目录**。递归查找准确匹配的 `<Study_ID>.npz`，每个匹配分支都移动，目标保留相对目录结构。例如 `brainage_finetuned/A.npz` 移到 `<transfer-dir>/brainage_finetuned/A.npz`。不要把包含 prepared 等中间产物的整个项目根目录传进来。
+- CSV 中的 `excluded_` 是上游增加的显示标记，匹配文件名前去掉一次。只有 coverage 满足条件才移动；例如 `excluded_R01_Study_002904` 两模态 coverage 均约 154 mm，默认不会移动。重复 ID 合并为一个筛选 ID。
+- 空值、`unknown`、NaN、无穷或负数不视为有效 coverage，也不自动视为 0；另一模态有有效低值时仍移动。程序报告含未知/非法 coverage 的行数。
+- 只移动 NPZ，不读取或修改其内容，不做哈希校验。vit_survival 的 embedding metadata 已在 NPZ 内；不移动队列 CSV、归一化统计、日志和临时文件，也不自动更新训练 manifest。后续训练应使用与保留样本一致的 manifest。
+- 执行前检查全部已匹配目标；存在同名目标或目录冲突则停止，尚未开始任何移动。源目录和转移目录不能相同或相互嵌套。未找到 NPZ 的选中 Study 会打印 `[missing]`；不会报成已转移。重复执行只处理源中仍存在的匹配文件。
+- 支持跨磁盘移动（`shutil.move`）。跨磁盘是复制后删除，不是整个批次的原子操作；中途失败时已移动文件留在目标目录，已有目标不会被自动覆盖。
+- `--dry-run` 只检查并打印，不创建目录或文件。输出包括选中 Study 数、找到/缺失 Study 数及文件数；多个模型分支使文件数可能大于 Study 数。
+
+**CSV 完整性范围：** 上游导出器默认 `--coverage-threshold-mm 100`，因此旧 CSV 通常缺少两模态均 ≥100、但至少一个 <101 的 Study。本脚本只能筛选 CSV 已有行。要完整使用默认阈值 101，请用原 `selected_series.csv` 和 labels 重新导出一个新 CSV，指定 `--coverage-threshold-mm 101`；更大的移动阈值同样需要上游导出阈值至少一样大。
+
+本工具的专项测试（临时合成文件，不接触真实 embedding）：
+
+```bash
+export PYTHONPATH="$BRAIN_REPO/src"
+python -m unittest brainiac_embedding.single_abnormal_study.test_move_low_coverage_embeddings -v
+```
