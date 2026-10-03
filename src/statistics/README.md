@@ -1,5 +1,7 @@
 # 每个 study 的全部 MRI 序列统计
 
+SeriesNumber/AcquisitionNumber 多值及 UID 碰撞检查：见 [README_acquisitions.md](README_acquisitions.md)，使用 `check_series_acquisitions.py` 扫描全部 DICOM，已知 `R01_Study_002904` 单独汇总。
+
 程序：`summarize_dicom_sequences.py`。只依赖 pydicom 和 Python 标准库，不需要 GPU，不读像素，不修改源 DICOM。将脚本放到服务器即可运行，无需其他项目脚本。
 
 GitHub 位置：`YueHu00000/BrainIAC` 的 `src/statistics/`。在仓库根目录运行 `cd src/statistics` 后使用以下命令；环境需已安装 pydicom（本地测试版本为 3.0.1）。
