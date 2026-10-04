@@ -1,0 +1,12 @@
+# Training starts from scratch unless --init-checkpoint or --resume is given.
+# Preserve actual author parameters, not unused values in the original config.
+model:
+  max_epochs: 200
+data:
+  size: [96, 96, 96]
+  batch_size: 160
+  num_workers: 24
+optim:
+  lr: 0.0005
+  weight_decay: 0.0005 # Actual AdamW value; fixed in model.py.
+  temperature: default # NTXentLoss(); effective value saved to run_config.yml.

@@ -1,0 +1,12 @@
+# Install the appropriate PyTorch build for your CPU/CUDA environment first.
+numpy>=1.26,<2
+pandas
+pydicom
+SimpleITK
+nibabel==5.4.2
+PyYAML
+torch
+torchvision
+monai==1.3.2
+pytorch-lightning==2.6.6
+lightly==1.5.26

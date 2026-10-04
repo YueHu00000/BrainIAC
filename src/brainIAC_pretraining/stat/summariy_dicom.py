@@ -21,7 +21,7 @@ def integer(ds, key):
     return int(value) if value is not None and str(value).strip() else None
 
 
-def inspect_study(study_id, roots):
+def inspect_study(study_id, roots, reject_multiframe=False):
     matches = [root / study_id for root in roots if (root / study_id).is_dir()]
     study = dict(study_id=study_id, status="complete", series_count=0, selected_file_count=0,
                  discarded_file_count=0)
@@ -42,6 +42,8 @@ def inspect_study(study_id, roots):
         except Exception as error:
             issues.append(dict(study_id=study_id, file=str(path), reason=f"{type(error).__name__}: {error}"))
             continue
+        if reject_multiframe and int(ds.get("NumberOfFrames", 1)) > 1:
+            raise ValueError(f"{study_id}_{number}: unsupported multi-frame DICOM: {path}")
         groups[number].append((path, ds, acquisition))
     rows = []
     for number, items in sorted(groups.items()):
