@@ -14,7 +14,7 @@ def parse_args(argv=None):
     parser.add_argument("--input-dir", type=Path, required=True)
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--config", type=Path,
-                        default=Path(__file__).resolve().parents[1] / "simclr/simclr/config.yml")
+                        default=Path(__file__).resolve().parents[1] / "simclr/config.yml")
     initialization = parser.add_mutually_exclusive_group()
     initialization.add_argument("--resume", type=Path, help="Resume full Lightning checkpoint")
     initialization.add_argument("--init-checkpoint", type=Path, help="Initialize encoder weights only")
@@ -34,9 +34,9 @@ def run(args):
     from pytorch_lightning.loggers import CSVLogger
     from torch.utils.data import DataLoader
     from monai.utils import set_determinism
-    from simclr.simclr.dataset import NiftiDataset
-    from simclr.simclr.model import SimCLRModel
-    from simclr.simclr.train_multigpu import build_transform
+    from simclr.dataset import NiftiDataset
+    from simclr.model import SimCLRModel
+    from simclr.train_multigpu import build_transform
 
     with args.config.open(encoding="utf-8") as stream:
         config = yaml.safe_load(stream)

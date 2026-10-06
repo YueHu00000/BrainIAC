@@ -21,6 +21,8 @@ class TrainingCliTests(unittest.TestCase):
         self.assertIsNone(args.resume)
         self.assertIsNone(args.init_checkpoint)
         self.assertEqual(args.config.parent.name, "simclr")
+        self.assertEqual(args.config, Path(__file__).resolve().parents[2] / "simclr/config.yml")
+        self.assertTrue(args.config.is_file())
 
     def test_resume_and_initialization_are_exclusive(self):
         with patch("sys.stderr"), self.assertRaises(SystemExit):
@@ -43,7 +45,7 @@ class TrainingTests(unittest.TestCase):
         cls.torch.set_num_threads(cls.previous_threads)
 
     def test_csv_only_and_independent_transform_calls(self):
-        from simclr.simclr.dataset import NiftiDataset
+        from simclr.dataset import NiftiDataset
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             csv = root / "final.csv"
@@ -61,7 +63,7 @@ class TrainingTests(unittest.TestCase):
             self.assertEqual(calls, [str(root / "Study_1_7.nii.gz")] * 2)
 
     def test_missing_input_raises_at_loading(self):
-        from simclr.simclr.dataset import NiftiDataset
+        from simclr.dataset import NiftiDataset
         with tempfile.TemporaryDirectory() as tmp:
             csv = Path(tmp) / "final.csv"
             csv.write_text("unique_id\nmissing\n", encoding="utf-8")
@@ -73,8 +75,8 @@ class TrainingTests(unittest.TestCase):
     def test_real_nifti_author_augmentation_produces_two_views(self):
         import nibabel as nib
         import numpy as np
-        from simclr.simclr.dataset import NiftiDataset
-        from simclr.simclr.train_multigpu import build_transform
+        from simclr.dataset import NiftiDataset
+        from simclr.train_multigpu import build_transform
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             csv = root / "final.csv"
@@ -91,7 +93,7 @@ class TrainingTests(unittest.TestCase):
 
     def tiny_model(self):
         torch = self.torch
-        from simclr.simclr.model import SimCLRModel
+        from simclr.model import SimCLRModel
 
         class TinyBackbone(torch.nn.Module):
             def __init__(self, **kwargs):
@@ -101,21 +103,21 @@ class TrainingTests(unittest.TestCase):
             def forward(self, x):
                 return self.encoder(x), []
 
-        with patch("simclr.simclr.model.ViT", TinyBackbone), patch(
-                "simclr.simclr.model.SimCLRProjectionHead",
+        with patch("simclr.model.ViT", TinyBackbone), patch(
+                "simclr.model.SimCLRProjectionHead",
                 side_effect=lambda *_: torch.nn.Linear(8, 8)):
             return SimCLRModel({"lr": 0.0005, "max_epochs": 2})
 
     def test_pooling_keeps_first_patch(self):
         torch = self.torch
-        from simclr.simclr.model import SimCLRModel
+        from simclr.model import SimCLRModel
 
         class Tokens(torch.nn.Module):
             def forward(self, x):
                 return x, []
 
-        with patch("simclr.simclr.model.ViT", return_value=Tokens()) as constructor, patch(
-                "simclr.simclr.model.SimCLRProjectionHead", return_value=torch.nn.Identity()):
+        with patch("simclr.model.ViT", return_value=Tokens()) as constructor, patch(
+                "simclr.model.SimCLRProjectionHead", return_value=torch.nn.Identity()):
             model = SimCLRModel({"lr": 0.0005})
         self.assertFalse(constructor.call_args.kwargs["classification"])
         tokens = torch.tensor([[[1., 0.], [0., 3.]]])
@@ -123,7 +125,7 @@ class TrainingTests(unittest.TestCase):
         torch.testing.assert_close(model(tokens), expected)
 
     def test_real_vit_forward_has_216_patches(self):
-        from simclr.simclr.model import SimCLRModel
+        from simclr.model import SimCLRModel
         torch = self.torch
         model = SimCLRModel({"lr": 0.0005}).eval()
         image = torch.randn(2, 1, 96, 96, 96)

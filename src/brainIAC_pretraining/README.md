@@ -31,7 +31,7 @@ python -m pip install -r requirements-pretraining.txt
 
 保持作者的 MONAI 1.3.2，并限制 NumPy < 2，避免旧随机增强在 NumPy 2 上出现 seed OverflowError。预处理继续使用 src/preprocessing、src/brainiac_embedding/_preprocess_bridge.py、模板和 HD-BET 权重，运行环境须满足原有成像依赖。
 
-复制后的作者代码在 `src/simclr/simclr/`。原 `E:\codex\MRI_project\BrainIAC\simclr` 保留。新的训练入口是本目录的 train.py；复制后的 train_multigpu.py 提供增强函数，不再作为直接启动入口。
+复制后的作者代码在 `src/simclr/`。原 `E:\codex\MRI_project\BrainIAC\simclr` 保留。新的训练入口是本目录的 train.py；复制后的 train_multigpu.py 提供增强函数，不再作为直接启动入口。
 
 ## 分阶段运行
 
