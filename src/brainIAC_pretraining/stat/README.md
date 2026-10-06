@@ -76,10 +76,31 @@ python src/brainIAC_pretraining/stat/summary_dicom_v2.py \
 
 缺失几何、缺失 InstanceNumber、扫描不完整及未建模的 multiframe 位置检查保持 unknown。Enhanced MR 的 acquisition 选择依赖顶层 AcquisitionNumber，不支持按 frame 内的 acquisition 重新选择。阈值 pass 只是这些 header 检查的结果，不等于图像质量、全脑覆盖或模型可用性已获确认。
 
+## 逐 series 低 coverage 临床导出
+
+`export_low_coverage_clinical.py` 输出 `coverage_mm < 阈值` 的 `{Study_ID}_{SeriesNumber}`，每个 series 一行，并标注是否是旧 T1/T2 流程实际选中的 series。
+
+```bash
+python src/brainIAC_pretraining/stat/export_low_coverage_clinical.py \
+  --selected-csv resources/all_series_stats/selected_series.csv \
+  --old-selected-csv resources/old_t1t2_stats/selected_series.csv \
+  --labels-csv resources/labels.csv \
+  --output-csv resources/low_coverage_series_clinical.csv \
+  --coverage-threshold-mm 100
+```
+
+- `--selected-csv` 为新全 series 统计第一阶段的原始 CSV；`--old-selected-csv` 为旧 T1/T2 统计第一阶段的原始 CSV，必须有 study_id、modality、status、series_number。旧临床导出 CSV 没有 SeriesNumber，不能用于判断旧选择。
+- 使用旧 CSV 的实际选择，不重新按 SeriesDescription、最大 SeriesNumber 或例外规则推测。标注只比较 Study_ID + SeriesNumber，不要求新旧 acquisition 相同，也不表示旧 embedding 成功。
+- `is_previous_t1t2_selected` 为 yes/no/unknown；`previous_selected_modality` 为 T1、T2、T1;T2 或空值。没有旧 study 记录或旧选择失败时，无法确认的 series 标为 unknown，不误记为 no。已确认的选中记录仍标 yes。
+- 输出 unique_id、Study_ID、series_number、临床列、frame_count、coverage_mm 及两个旧选择标注列。临床列沿用旧程序：labels.csv 第一列和最后一列不导出，Study_ID 只用于连接；同一 study 的多个 series 分别保留，缺失临床记录仍输出并留空。字符串 ID、前导零和字面值 NA 保留。
+- 默认阈值 100 mm，严格小于才导出，等于阈值不导出；未知、非有限或负 coverage 不纳入。只使用 status=selected 的新统计记录，不额外强制纳入重复平面 series，也不添加 excluded_ ID 前缀。需要涵盖 [100,101) 时使用阈值 101。
+- 直接使用第一阶段的 coverage，不要求通过预训练 quality 筛选。不会读取 DICOM、执行转换、移动图像或引入哈希校验。输出 CSV 为 UTF-8 BOM，已有输出拒绝覆盖。
+
 ## 验证
 
 ```bash
 python -m unittest discover -s src/brainIAC_pretraining/stat -p 'test_series_statistics.py' -v
+python -m unittest discover -s src/brainIAC_pretraining/stat -p 'test_export_low_coverage_clinical.py' -v
 ```
 
 8 项合成测试包含：46 文件双 acquisition 选择为 23 文件、数值最大值、所有描述及旧例外序列都纳入、递归扫描、缺失 acquisition/instance/几何、重复平面只影响本 series，以及正常/全部排除/空队列的两步 CLI 运行。尚未在服务器的真实数据上运行这两个新脚本。
