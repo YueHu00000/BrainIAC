@@ -1,6 +1,7 @@
 """Synthetic metadata checks for manifest and compact quality records."""
 
 import json
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -8,7 +9,8 @@ from pathlib import Path
 import tempfile
 import unittest
 import pydicom
-from pydicom.dataset import FileDataset, FileMetaDataset
+from pydicom.dataset import Dataset, FileDataset, FileMetaDataset
+from pydicom.sequence import Sequence
 from pydicom.uid import ExplicitVRLittleEndian, MRImageStorage, generate_uid
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
@@ -105,14 +107,6 @@ class InventoryTests(unittest.TestCase):
         dicom(root, 10, 2, 1)
         with self.assertRaisesRegex(ValueError, "Study_1_10: unsupported multi-frame DICOM"):
             build_manifest(["Study_1"], [root])
-        # The statistics CLI keeps its original ability to summarize multiframe.
-        from brainIAC_pretraining.stat.summariy_dicom import inspect_study
-        selected, _, _ = inspect_study("Study_1", [root])
-        self.assertEqual(selected[0]["acquisition_number"], 2)
-        self.assertEqual(selected[0]["frame_count"], 1)
-        (root / "Study_1" / "s10_a2_i1.dcm").unlink()
-        selected, _, _ = inspect_study("Study_1", [root])
-        self.assertEqual(selected[0]["frame_count"], 23)
 
 
     def test_relative_folder_list_and_missing_study_report(self):
@@ -155,14 +149,17 @@ class InventoryTests(unittest.TestCase):
             build_quality([manifest], [selected])
 
     def test_multiframe_cli_fails_without_publishing_quality_csv(self):
-        manifest, selected = rows(file_count="1")
-        write_rows(self.tmp_path / "manifest.csv", [manifest], MANIFEST_FIELDS)
-        write_rows(self.tmp_path / "selected.csv", [selected], list(selected))
+        root = self.tmp_path / "dicom"
+        path = dicom(root, 10, 2, 1)
+        manifest, _ = build_manifest(["Study_1"], [root])
+        write_rows(self.tmp_path / "manifest.csv", manifest, MANIFEST_FIELDS)
+        dataset = pydicom.dcmread(path)
+        dataset.NumberOfFrames = 23
+        dataset.save_as(path, enforce_file_format=True)
         output = self.tmp_path / "output"
         package = Path(__file__).resolve().parents[1]
         result = subprocess.run([sys.executable, str(package / "quality.py"),
                                  "--manifest", str(self.tmp_path / "manifest.csv"),
-                                 "--selected-csv", str(self.tmp_path / "selected.csv"),
                                  "--output-dir", str(output)], capture_output=True, text=True)
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("Study_1_10", result.stderr)
@@ -191,7 +188,15 @@ class InventoryTests(unittest.TestCase):
         dicom(root, 10, 2, 1)
         write_rows(tmp_path / "labels.csv", [{"Study_ID": "Study_1"}], ["Study_ID"])
         (tmp_path / "folders.txt").write_text("dicom\n", encoding="utf-8")
-        package = Path(__file__).resolve().parents[1]
+        # An isolated copy physically lacks the statistics directory.
+        package = tmp_path / "src/brainIAC_pretraining"
+        shutil.copytree(Path(__file__).resolve().parents[1], package,
+                        ignore=shutil.ignore_patterns("stat", "tests", "__pycache__"))
+        self.assertFalse((package / "stat").exists())
+        for entry in ("manifest", "quality", "convert", "pre_process", "exclude", "train"):
+            result = subprocess.run([sys.executable, str(package / f"{entry}.py"), "--help"],
+                                    capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
         output = tmp_path / "output"
         result = subprocess.run([sys.executable, str(package / "manifest.py"),
                                  "--csv", str(tmp_path / "labels.csv"),
@@ -200,16 +205,78 @@ class InventoryTests(unittest.TestCase):
         assert result.returncode == 0, result.stderr
         manifest = read_rows(output / "manifest.csv")
         assert list(manifest[0]) == MANIFEST_FIELDS
-        selected = dict(manifest[0], file_count=1, frame_count=1, unique_slice_count=1, coverage_mm=0)
-        write_rows(tmp_path / "selected.csv", [selected], list(selected))
         result = subprocess.run([sys.executable, str(package / "quality.py"),
                                  "--manifest", str(output / "manifest.csv"),
-                                 "--selected-csv", str(tmp_path / "selected.csv"),
                                  "--output-dir", str(output)], capture_output=True, text=True)
         assert result.returncode == 0, result.stderr
         quality = read_rows(output / "image_number_coverage.csv")
         assert list(quality[0]) == QUALITY_FIELDS
         assert quality[0]["frame_count"] == "1"
+        assert quality[0]["coverage_mm"] == "0.0"
+
+    def test_quality_measures_only_manifest_selected_acquisition(self):
+        root = self.tmp_path / "dicom"
+        for acquisition in (1, 2):
+            for instance in range(1, 24):
+                dicom(root, 10, acquisition, instance)
+        manifest, _ = build_manifest(["Study_1"], [root])
+        # A new larger acquisition must not change the manifest's selection.
+        dicom(root, 10, 3, 1)
+        accepted, rejected = build_quality(manifest)
+        self.assertFalse(rejected)
+        self.assertEqual(accepted, [dict(unique_id="Study_1_10", frame_count=23, coverage_mm=154.0)])
+
+    def test_header_geometry_filters_only_the_affected_series(self):
+        root = self.tmp_path / "dicom"
+        for number in (10, 11, 12, 13, 14, 15):
+            for instance in (1, 2):
+                path = dicom(root, number, 2, instance)
+                ds = pydicom.dcmread(path)
+                if number == 10:
+                    # Sagittal slices: coverage is normal projection, not z range.
+                    ds.ImageOrientationPatient = [0, 1, 0, 0, 0, 1]
+                    ds.ImagePositionPatient = [instance * 7, 0, 0]
+                elif number == 11:
+                    ds.ImagePositionPatient = [0, 0, 7]
+                elif number == 12 and instance == 2:
+                    del ds.ImagePositionPatient
+                elif number == 13 and instance == 2:
+                    ds.ImageOrientationPatient = [1, 0, 0, 0, 0, 1]
+                elif number == 14 and instance == 2:
+                    ds.FrameOfReferenceUID = "1.2.5"
+                elif number == 15:
+                    ds.ImageOrientationPatient = [2, 0, 0, 0, 1, 0]
+                ds.save_as(path, enforce_file_format=True)
+        manifest, _ = build_manifest(["Study_1"], [root])
+        accepted, rejected = build_quality(manifest)
+        self.assertEqual(accepted, [dict(unique_id="Study_1_10", frame_count=2, coverage_mm=7.0)])
+        self.assertEqual(rejected[0], dict(unique_id="Study_1_11", reason="count_mismatch"))
+        self.assertEqual([row["reason"] for row in rejected[1:]], ["unknown_or_invalid_count"] * 4)
+
+    def test_single_frame_shared_geometry_and_plane_tolerance(self):
+        root = self.tmp_path / "dicom"
+        for instance, position in enumerate((0, 0.009, 7), 1):
+            path = dicom(root, 10, 2, instance)
+            ds = pydicom.dcmread(path)
+            shared, frame, plane, axes = Dataset(), Dataset(), Dataset(), Dataset()
+            axes.ImageOrientationPatient = ds.ImageOrientationPatient
+            plane.ImagePositionPatient = [0, 0, position]
+            shared.PlaneOrientationSequence = Sequence([axes])
+            frame.PlanePositionSequence = Sequence([plane])
+            ds.SharedFunctionalGroupsSequence = Sequence([shared])
+            ds.PerFrameFunctionalGroupsSequence = Sequence([frame])
+            del ds.ImagePositionPatient
+            del ds.ImageOrientationPatient
+            ds.save_as(path, enforce_file_format=True)
+        manifest, _ = build_manifest(["Study_1"], [root])
+        accepted, rejected = build_quality(manifest)
+        self.assertEqual(accepted, [])
+        self.assertEqual(rejected, [dict(unique_id="Study_1_10", reason="count_mismatch")])
+        (root / "Study_1/s10_a2_i2.dcm").unlink()
+        manifest, _ = build_manifest(["Study_1"], [root])
+        accepted, rejected = build_quality(manifest)
+        self.assertFalse(rejected)
+        self.assertEqual(accepted, [dict(unique_id="Study_1_10", frame_count=2, coverage_mm=7.0)])
 
 if __name__ == "__main__":
     unittest.main()

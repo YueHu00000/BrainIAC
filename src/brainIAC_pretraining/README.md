@@ -7,17 +7,19 @@
 | 阶段 | 输入 | 输出 | 失败行为 |
 |---|---|---|---|
 | manifest | labels CSV、folder list | manifest.csv | 扫描问题记录；多帧 MR DICOM 报错中断 |
-| quality | selected_series.csv、manifest.csv | image_number_coverage.csv | 文件数与 frame 数不一致报错中断；独立切片数不一致筛掉对应 series |
+| quality | manifest.csv 所列的 DICOM header | image_number_coverage.csv | 多帧报错中断；独立切片数不一致筛掉对应 series |
 | convert | manifest.csv、质量 CSV | raw/<ID>.nii.gz、converted.csv | 多帧 DICOM 中断；其他单 series 转换错误报告后继续 |
 | pre_process | converted.csv、raw 目录 | processed/<ID>.nii.gz、pre_process.csv | 单 series 失败报告后继续 |
 | exclude | 质量 CSV、pre_process.csv、processed 目录 | excluded_preprocess/、final_pre_process.csv | 移动冲突报错，不覆盖 |
 | train | final_pre_process.csv、processed 目录 | 日志、完整 checkpoint | 直接读取；任何读取、增强、训练错误中断 |
 
-quality 正式结果只有 `unique_id,frame_count,coverage_mm`。不记录 file_count、unique_slice_count、重复平面、位置检查或 flags。内部数量筛选仍利用已有统计：未知数量或 frame 数与独立平面数不一致时筛掉该 series，rejected_quality.csv 仅记录 ID 和原因；多帧属于致命错误，不作为普通排除处理。
+quality 正式结果只有 `unique_id,frame_count,coverage_mm`。不记录 file_count、unique_slice_count、重复平面、位置检查或 flags。内部直接从 manifest 所列 DICOM header 计算数量：未知数量或 frame 数与独立平面数不一致时筛掉该 series，rejected_quality.csv 仅记录 ID 和原因；多帧属于致命错误，不作为普通排除处理。
 
-coverage 沿用统计中的首末独立切片平面中心跨度，单位 mm。frame 和 coverage 的阈值只在 exclude 执行，严格小于阈值排除，等于阈值保留。缺失质量记录或未知 coverage 也排除并说明原因。
+coverage 按切片方向法向量投影后计算首末独立切片平面中心跨度，单位 mm；独立平面容差仍为 0.01 mm，方向容差仍为 1e-4。frame 和 coverage 的阈值只在 exclude 执行，严格小于阈值排除，等于阈值保留。缺失质量记录或未知 coverage 也排除并说明原因。
 
-manifest.csv 保存 unique_id、study_id、series_number、study_directory、acquisition_number、file_names；file_names 是 JSON 相对路径列表。quality 确认统计与 manifest 使用同一组选中文件及 acquisition，不读取图像或校验文件内容。
+manifest.csv 保存 unique_id、study_id、series_number、study_directory、acquisition_number、file_names；file_names 是 JSON 相对路径列表。quality 只读取这组选中文件的 header，不重新扫描目录或选择 acquisition，不读取像素。
+
+2026-10-06：六个阶段均不依赖 `stat/` 的程序或输出 CSV。扫描与必要的数量、coverage 计算放在本目录的 `_dicom.py`；`stat/` 继续作为独立统计工具保留。旧 quality 命令中的 `--selected-csv` 已移除。
 
 converted.csv、pre_process.csv 和 final_pre_process.csv 均只有 unique_id 一列。目录提供文件位置，文件名统一为 `<unique_id>.nii.gz`。训练只使用 final_pre_process.csv 所列文件，不预先核对目录，也不自动扫描增加样本。
 
@@ -37,24 +39,18 @@ python -m pip install -r requirements-pretraining.txt
 
 以下在仓库根目录执行。示例 `work/pretraining` 为独立输出位置，各图像目录不要混入旧文件、mask 或其他队列结果。每一步成功后再执行下一步；阈值必须根据本次实验指定。
 
-先运行已有全 series 统计（统计目录必须尚不存在）：
-
-```bash
-python src/brainIAC_pretraining/stat/summariy_dicom.py --csv resources/labels.csv --folder-list resources/folders.txt --output-dir work/pretraining/stats
-```
-
 生成 manifest：
 
 ```bash
 python src/brainIAC_pretraining/manifest.py --csv resources/labels.csv --folder-list resources/folders.txt --output-dir work/pretraining/inventory
 ```
 
-folder list 一行一个 DICOM 根目录；相对路径以 folder list 所在目录解析。labels 默认使用 Study_ID 列。manifest 复用原扫描函数，检测到任意扫描到的 MR 文件 NumberOfFrames > 1 时立即报出 ID、路径并中断，包含之后会被 acquisition 选择舍弃的文件。旧统计入口保持原有多帧统计能力。
+folder list 一行一个 DICOM 根目录；相对路径以 folder list 所在目录解析。labels 默认使用 Study_ID 列。manifest 使用本目录的扫描函数，检测到任意扫描到的 MR 文件 NumberOfFrames > 1 时立即报出 ID、路径并中断，包含之后会被 acquisition 选择舍弃的文件。无需预先运行统计程序。
 
 生成质量 CSV：
 
 ```bash
-python src/brainIAC_pretraining/quality.py --manifest work/pretraining/inventory/manifest.csv --selected-csv work/pretraining/stats/selected_series.csv --output-dir work/pretraining/quality
+python src/brainIAC_pretraining/quality.py --manifest work/pretraining/inventory/manifest.csv --output-dir work/pretraining/quality
 ```
 
 转换 manifest 与质量 CSV 共同包含的 series：
@@ -122,9 +118,8 @@ python src/brainIAC_pretraining/train.py --final-csv work/pretraining/processed/
 
 ```bash
 python -m unittest discover -s src/brainIAC_pretraining/tests -v
-python -m unittest discover -s src/brainIAC_pretraining/stat -p test_series_statistics.py -v
 ```
 
-测试覆盖最大数值 acquisition、已知双 23 切片选择、精简 CSV、数量筛选、多帧中断、真实合成 DICOM 转换、断点续跑、预处理单 series 失败继续、阈值边界、移动冲突与 dry-run、训练错误传播、真实 NIfTI 增强、真实 ViT-B 前向、对比损失与参数更新、完整 optimizer/scheduler 恢复，以及串联的数据阶段。
+测试覆盖不含 stat 目录时六个入口启动及 manifest→quality 执行、最大数值 acquisition、已知双 23 切片选择、精简 CSV、法向量投影、单帧 shared/per-frame 几何、数量筛选、多帧中断、真实合成 DICOM 转换、断点续跑、预处理单 series 失败继续、阈值边界、移动冲突与 dry-run、训练错误传播、真实 NIfTI 增强、真实 ViT-B 前向、对比损失与参数更新、完整 optimizer/scheduler 恢复，以及串联的数据阶段。
 
 本地验证使用合成数据。预处理调度通过 subprocess mock 验证，尚未对患者图像执行真实 N4/HD-BET；优化更新和 checkpoint 恢复使用小 backbone 替身及真实 Lightly/Lightning，完整 ViT 仅完成 CPU 前向。尚未运行真实 GPU 预训练，也没有产生预训练效果结论。

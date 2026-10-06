@@ -1,4 +1,4 @@
-"""Build an all-MR-series manifest using the statistics acquisition selection."""
+"""Build an all-MR-series manifest, keeping the largest AcquisitionNumber."""
 
 import argparse
 import json
@@ -9,21 +9,11 @@ if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from brainIAC_pretraining._common import read_rows, validate_id, write_rows
+from brainIAC_pretraining._dicom import inspect_study
 
 
 FIELDS = ["unique_id", "study_id", "series_number", "study_directory",
           "acquisition_number", "file_names"]
-
-
-def inspect_study(study_id, roots):
-    # The existing scanner has a script-style import of its adjacent helper.
-    stat_path = str(Path(__file__).parent / "stat")
-    sys.path.insert(0, stat_path)
-    try:
-        from brainIAC_pretraining.stat.summariy_dicom import inspect_study as scan
-    finally:
-        sys.path.remove(stat_path)
-    return scan(study_id, roots, reject_multiframe=True)
 
 
 def read_inputs(csv_path, folder_list, study_id_column="Study_ID"):

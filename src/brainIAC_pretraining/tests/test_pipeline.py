@@ -36,17 +36,12 @@ class PipelineTests(unittest.TestCase):
             write_rows(labels, ({"Study_ID": study} for study in ("S_1", "S_2", "S_3")), ["Study_ID"])
             folders.write_text("dicom\n", encoding="utf-8")
             scripts = Path(manifest.__file__).parent
-            stats = root / "stats"
-            subprocess.run([sys.executable, str(scripts / "stat/summariy_dicom.py"),
-                            "--csv", str(labels), "--folder-list", str(folders),
-                            "--output-dir", str(stats)], check=True, capture_output=True, text=True)
             inventory = root / "inventory"
             subprocess.run([sys.executable, str(scripts / "manifest.py"),
                             "--csv", str(labels), "--folder-list", str(folders),
                             "--output-dir", str(inventory)], check=True, capture_output=True, text=True)
             manifest_csv = inventory / "manifest.csv"
-            accepted, rejected = quality.build_quality(read_rows(manifest_csv),
-                                                       read_rows(stats / "selected_series.csv"))
+            accepted, rejected = quality.build_quality(read_rows(manifest_csv))
             self.assertFalse(rejected)
             quality_csv = root / "image_number_coverage.csv"
             write_rows(quality_csv, accepted, quality.FIELDS)

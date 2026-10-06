@@ -1,4 +1,4 @@
-"""Select consistent series statistics; record only frame count and coverage."""
+"""Measure manifest-listed DICOM headers; record only frame count and coverage."""
 
 import argparse
 import json
@@ -10,6 +10,7 @@ if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from brainIAC_pretraining._common import read_rows, validate_id, write_rows
+from brainIAC_pretraining._dicom import measure_series
 
 
 FIELDS = ["unique_id", "frame_count", "coverage_mm"]
@@ -46,7 +47,9 @@ def source_matches(manifest, selected):
     )
 
 
-def build_quality(manifest, selected):
+def build_quality(manifest, selected=None):
+    if selected is None:
+        selected = [measure_series(row) for row in manifest]
     tables = []
     for name, rows in (("manifest", manifest), ("selected statistics", selected)):
         table = {}
@@ -82,11 +85,10 @@ def build_quality(manifest, selected):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--selected-csv", required=True, type=Path)
     parser.add_argument("--manifest", required=True, type=Path)
     parser.add_argument("--output-dir", required=True, type=Path)
     args = parser.parse_args()
-    rows, rejected = build_quality(read_rows(args.manifest), read_rows(args.selected_csv))
+    rows, rejected = build_quality(read_rows(args.manifest))
     args.output_dir.mkdir(parents=True, exist_ok=True)
     write_rows(args.output_dir / "image_number_coverage.csv", rows, FIELDS)
     write_rows(args.output_dir / "rejected_quality.csv", rejected, ["unique_id", "reason"])
