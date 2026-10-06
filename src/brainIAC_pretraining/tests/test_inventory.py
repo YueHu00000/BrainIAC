@@ -226,6 +226,37 @@ class InventoryTests(unittest.TestCase):
         self.assertFalse(rejected)
         self.assertEqual(accepted, [dict(unique_id="Study_1_10", frame_count=23, coverage_mm=154.0)])
 
+    def test_quality_cli_uses_statistics_without_stat_code_or_dicom_files(self):
+        package = self.tmp_path / "src/brainIAC_pretraining"
+        shutil.copytree(Path(__file__).resolve().parents[1], package,
+                        ignore=shutil.ignore_patterns("stat", "tests", "__pycache__"))
+        manifest, selected = rows()
+        manifest["study_directory"] = selected["study_directory"] = str(self.tmp_path / "missing_dicom")
+        write_rows(self.tmp_path / "manifest.csv", [manifest], MANIFEST_FIELDS)
+        for label, updates in (("accepted", {}), ("mismatch", {"acquisition_number": "1"}),
+                               ("multiframe", {"file_count": "1"})):
+            with self.subTest(label=label):
+                statistics = dict(selected, **updates)
+                write_rows(self.tmp_path / "selected.csv", [statistics], list(statistics))
+                output = self.tmp_path / label
+                result = subprocess.run([sys.executable, str(package / "quality.py"),
+                                         "--manifest", str(self.tmp_path / "manifest.csv"),
+                                         "--selected-csv", str(self.tmp_path / "selected.csv"),
+                                         "--output-dir", str(output)], capture_output=True, text=True)
+                if label == "multiframe":
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertIn("file_count=1, frame_count=23", result.stderr)
+                    self.assertFalse((output / "image_number_coverage.csv").exists())
+                    continue
+                self.assertEqual(result.returncode, 0, result.stderr)
+                quality = read_rows(output / "image_number_coverage.csv")
+                if label == "accepted":
+                    self.assertEqual(quality, [dict(unique_id="Study_1_10", frame_count="23", coverage_mm="154.0")])
+                else:
+                    self.assertEqual(quality, [])
+                    self.assertEqual(read_rows(output / "rejected_quality.csv"),
+                                     [dict(unique_id="Study_1_10", reason="selected_source_mismatch")])
+
     def test_header_geometry_filters_only_the_affected_series(self):
         root = self.tmp_path / "dicom"
         for number in (10, 11, 12, 13, 14, 15):

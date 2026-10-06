@@ -7,19 +7,19 @@
 | 阶段 | 输入 | 输出 | 失败行为 |
 |---|---|---|---|
 | manifest | labels CSV、folder list | manifest.csv | 扫描问题记录；多帧 MR DICOM 报错中断 |
-| quality | manifest.csv 所列的 DICOM header | image_number_coverage.csv | 多帧报错中断；独立切片数不一致筛掉对应 series |
+| quality | manifest.csv、可选的 selected_series.csv；未指定统计 CSV 时读取 DICOM header | image_number_coverage.csv | 多帧或文件数与 frame 数不一致报错中断；独立切片数不一致筛掉对应 series |
 | convert | manifest.csv、质量 CSV | raw/<ID>.nii.gz、converted.csv | 多帧 DICOM 中断；其他单 series 转换错误报告后继续 |
 | pre_process | converted.csv、raw 目录 | processed/<ID>.nii.gz、pre_process.csv | 单 series 失败报告后继续 |
 | exclude | 质量 CSV、pre_process.csv、processed 目录 | excluded_preprocess/、final_pre_process.csv | 移动冲突报错，不覆盖 |
 | train | final_pre_process.csv、processed 目录 | 日志、完整 checkpoint | 直接读取；任何读取、增强、训练错误中断 |
 
-quality 正式结果只有 `unique_id,frame_count,coverage_mm`。不记录 file_count、unique_slice_count、重复平面、位置检查或 flags。内部直接从 manifest 所列 DICOM header 计算数量：未知数量或 frame 数与独立平面数不一致时筛掉该 series，rejected_quality.csv 仅记录 ID 和原因；多帧属于致命错误，不作为普通排除处理。
+quality 正式结果只有 `unique_id,frame_count,coverage_mm`。不记录 file_count、unique_slice_count、重复平面、位置检查或 flags。内部从已有统计 CSV 读取数量，或从 manifest 所列 DICOM header 计算数量：未知数量或 frame 数与独立平面数不一致时筛掉该 series，rejected_quality.csv 仅记录 ID 和原因；多帧属于致命错误，不作为普通排除处理。
 
 coverage 按切片方向法向量投影后计算首末独立切片平面中心跨度，单位 mm；独立平面容差仍为 0.01 mm，方向容差仍为 1e-4。frame 和 coverage 的阈值只在 exclude 执行，严格小于阈值排除，等于阈值保留。缺失质量记录或未知 coverage 也排除并说明原因。
 
-manifest.csv 保存 unique_id、study_id、series_number、study_directory、acquisition_number、file_names；file_names 是 JSON 相对路径列表。quality 只读取这组选中文件的 header，不重新扫描目录或选择 acquisition，不读取像素。
+manifest.csv 保存 unique_id、study_id、series_number、study_directory、acquisition_number、file_names；file_names 是 JSON 相对路径列表。quality 指定统计 CSV 时确认其文件列表、目录及 acquisition 与 manifest 一致，不读取 DICOM；未指定统计 CSV 时只读取 manifest 列出的 header，不重新扫描目录或选择 acquisition，不读取像素。
 
-2026-10-06：六个阶段均不依赖 `stat/` 的程序或输出 CSV。扫描与必要的数量、coverage 计算放在本目录的 `_dicom.py`；`stat/` 继续作为独立统计工具保留。旧 quality 命令中的 `--selected-csv` 已移除。
+2026-10-06：六个阶段均不导入或调用 `stat/` 中的程序文件。扫描与必要的数量、coverage 计算放在本目录的 `_dicom.py`；`stat/` 继续作为独立统计工具保留。quality 可以通过 `--selected-csv` 使用 stat 输出的 CSV，CSV 可存放在任意目录；不指定该参数也能运行。
 
 converted.csv、pre_process.csv 和 final_pre_process.csv 均只有 unique_id 一列。目录提供文件位置，文件名统一为 `<unique_id>.nii.gz`。训练只使用 final_pre_process.csv 所列文件，不预先核对目录，也不自动扫描增加样本。
 
@@ -52,6 +52,14 @@ folder list 一行一个 DICOM 根目录；相对路径以 folder list 所在目
 ```bash
 python src/brainIAC_pretraining/quality.py --manifest work/pretraining/inventory/manifest.csv --output-dir work/pretraining/quality
 ```
+
+已有全 series 统计 CSV 时可直接使用，避免重读 DICOM：
+
+```bash
+python src/brainIAC_pretraining/quality.py --manifest work/pretraining/inventory/manifest.csv --selected-csv work/pretraining/stats/selected_series.csv --output-dir work/pretraining/quality
+```
+
+`--selected-csv` 使用全 series 的原始 `selected_series.csv`，需包含 unique_id、选中文件信息、file_count、frame_count、unique_slice_count 和 coverage_mm；不使用旧 T1/T2 两行一个 study 的 CSV。缺少某个 unique_id 或选中文件不一致时记录到 rejected_quality.csv。
 
 转换 manifest 与质量 CSV 共同包含的 series：
 

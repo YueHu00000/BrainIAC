@@ -1,4 +1,4 @@
-"""Measure manifest-listed DICOM headers; record only frame count and coverage."""
+"""Read series statistics or DICOM headers; record only frame count and coverage."""
 
 import argparse
 import json
@@ -86,9 +86,12 @@ def build_quality(manifest, selected=None):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--manifest", required=True, type=Path)
+    parser.add_argument("--selected-csv", type=Path,
+                        help="Use an existing all-series statistics CSV instead of reading DICOM headers")
     parser.add_argument("--output-dir", required=True, type=Path)
     args = parser.parse_args()
-    rows, rejected = build_quality(read_rows(args.manifest))
+    selected = read_rows(args.selected_csv) if args.selected_csv is not None else None
+    rows, rejected = build_quality(read_rows(args.manifest), selected)
     args.output_dir.mkdir(parents=True, exist_ok=True)
     write_rows(args.output_dir / "image_number_coverage.csv", rows, FIELDS)
     write_rows(args.output_dir / "rejected_quality.csv", rejected, ["unique_id", "reason"])
