@@ -72,6 +72,26 @@ quality 的 `--selected-csv` 使用新版第一阶段的原始 `selected_series.
 python src/brainIAC_pretraining/convert.py --manifest work/pretraining/inventory/manifest.csv --output-dir work/pretraining/raw
 ```
 
+复用旧 embedding 的 T1/T2 预处理文件（可选，在逐 series 预处理前执行）：
+
+```bash
+python src/brainIAC_pretraining/reuse_preprocess.py \
+  --old-selected-csv /reports/old_t1t2/selected_series.csv \
+  --manifest work/pretraining/inventory/manifest.csv \
+  --old-preprocess-dir /data/old_embedding/processed_nifti \
+  --output-dir work/pretraining/processed
+```
+
+三个输入路径分别指定，不要求相邻。旧 preprocess 根目录包含 `<Study_ID>/T1.nii.gz`、`<Study_ID>/T2.nii.gz`；旧统计须使用 T1/T2 第一阶段的原始 selected_series.csv，带 `series_instance_uids`、`series_number`、`study_directory` 和 JSON `file_names`，且对应生成旧输出时实际采用的来源。新版 manifest 是复制目标的唯一身份依据，不用全 series 统计猜测 T1/T2。
+
+程序先核对，再把对应文件原样复制为 `<unique_id>.nii.gz`，不重新预处理。要求单个明确 UID、相同 DICOM study 目录、相同原始文件清单及排列顺序、旧输出存在；旧 UID 混合、与新版最大 acquisition 的文件不一致、缺失资料或输出、多份旧输出竞争同一新 ID 时放弃并说明原因。不同 DICOM 根路径也视为不能确认，不仅比较同名文件。旧目录中没有统计记录的 T1/T2 文件标为 missing_old_statistics。T1 与 T2 独立判断，允许只复用其中一个；仍需使用与旧流程一致的模板和预处理设置。
+
+唯一报告为输出目录中的 `old_name_change.csv`：`study_id,modality,old_file,unique_id,acquisition_number,status,reason,action,error`。新文件名为 `<unique_id>.nii.gz`；status 为 reusable／abandoned，action 为 copied／skipped_existing／abandoned／copy_failed，中断时未处理完的记录为 pending。放弃表示本次不复用，不删除旧文件。报告每次运行更新，记录本次动作。
+
+复制程序保留原件，已有正式目标跳过；文件复制到临时目录，完整复制后才发布正式名称。单文件复制失败记录并继续，重新运行会重试没有正式输出的文件。不读取或校验 NIfTI 内容，也不做 coverage／frame 阈值筛选；后续仍运行 quality 和 exclude。输出目录须与旧 preprocess 目录互不嵌套，并仅放置本次新 ID 的预训练图像。
+
+`reuse_preprocess.py` **不生成或修改 pre_process.csv**，该文件由下面的 `pre_process.py` 在运行结束时重扫输出目录生成。已复制的 ID 在 converted.csv 中被遍历到时直接跳过；即使某个已复制 ID 尚未列在 converted.csv，目录重扫仍会纳入它。不要为了复用文件而把不存在 raw NIfTI 的 ID 伪填入 converted.csv。
+
 逐 series 预处理：
 
 ```bash
