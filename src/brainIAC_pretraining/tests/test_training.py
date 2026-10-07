@@ -49,7 +49,8 @@ class TrainingTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             csv = root / "final.csv"
-            csv.write_text("unique_id\nStudy_1_7\n", encoding="utf-8")
+            ids = ["Study_1_1.2.826.0.1.131_7", "Study_1_1.2.826.0.1.134_7"]
+            csv.write_text("unique_id\n" + "\n".join(ids) + "\n", encoding="utf-8")
             (root / "unlisted.nii.gz").write_bytes(b"not a nifti")
             calls = []
 
@@ -58,15 +59,17 @@ class TrainingTests(unittest.TestCase):
                 return {"image": len(calls)}
 
             dataset = NiftiDataset(csv, root, transform)
-            self.assertEqual(len(dataset), 1)
+            self.assertEqual(len(dataset), 2)
             self.assertEqual(dataset[0], ({"image": 1}, {"image": 2}))
-            self.assertEqual(calls, [str(root / "Study_1_7.nii.gz")] * 2)
+            self.assertEqual(dataset[1], ({"image": 3}, {"image": 4}))
+            self.assertEqual(calls, [str(root / f"{unique_id}.nii.gz")
+                                     for unique_id in ids for _ in range(2)])
 
     def test_missing_input_raises_at_loading(self):
         from simclr.dataset import NiftiDataset
         with tempfile.TemporaryDirectory() as tmp:
             csv = Path(tmp) / "final.csv"
-            csv.write_text("unique_id\nmissing\n", encoding="utf-8")
+            csv.write_text("unique_id\nmissing_1.2.826.0.1.132_10\n", encoding="utf-8")
             dataset = NiftiDataset(csv, tmp, lambda image: Path(image["image"]).read_bytes())
             self.assertEqual(len(dataset), 1)
             with self.assertRaises(FileNotFoundError):
@@ -80,9 +83,9 @@ class TrainingTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             csv = root / "final.csv"
-            csv.write_text("unique_id\nsample\n", encoding="utf-8")
+            csv.write_text("unique_id\nsample_1.2.826.0.1.133_10\n", encoding="utf-8")
             image = np.random.default_rng(10).normal(size=(16, 16, 16)).astype("float32")
-            nib.save(nib.Nifti1Image(image, np.eye(4)), root / "sample.nii.gz")
+            nib.save(nib.Nifti1Image(image, np.eye(4)), root / "sample_1.2.826.0.1.133_10.nii.gz")
             transform = build_transform()
             transform.set_random_state(seed=0)
             a, b = NiftiDataset(csv, root, transform)[0]

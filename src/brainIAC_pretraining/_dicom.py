@@ -24,6 +24,16 @@ def reject_multiframe(ds, unique_id, path):
         raise MultiFrameDicomError(f"{unique_id}: unsupported multi-frame DICOM: {path}")
 
 
+def is_projection(ds):
+    image_type = ds.get("ImageType", [])
+    if isinstance(image_type, str):
+        image_type = image_type.split("\\")
+    if any(str(value).strip().upper() in ("PJN", "PROJECTION IMAGE") for value in image_type):
+        return True
+    description = str(ds.get("SeriesDescription", "")).strip().upper()
+    return description.rsplit("/", 1)[-1].strip() == "PJN"
+
+
 def inspect_study(study_id, roots):
     matches = [root / study_id for root in roots if (root / study_id).is_dir()]
     study = dict(status="complete")
@@ -35,8 +45,17 @@ def inspect_study(study_id, roots):
     for path in sorted(p for p in directory.rglob("*") if p.is_file()):
         try:
             ds = pydicom.dcmread(path, stop_before_pixels=True)
-            if str(ds.get("Modality", "")).upper() != "MR":
-                continue
+        except Exception as error:
+            issues.append(dict(study_id=study_id, file=str(path), reason=f"{type(error).__name__}: {error}"))
+            continue
+        if str(ds.get("Modality", "")).upper() != "MR":
+            continue
+        uid = str(ds.get("SeriesInstanceUID") or "").strip()
+        # Also reject files that would later be excluded or have invalid metadata.
+        reject_multiframe(ds, f"{study_id}_{uid or 'unknown'}_{ds.get('SeriesNumber', 'unknown')}", path)
+        try:
+            if not uid:
+                raise ValueError("Missing SeriesInstanceUID")
             number = integer(ds, "SeriesNumber")
             if number is None:
                 raise ValueError("Missing SeriesNumber")
@@ -44,16 +63,17 @@ def inspect_study(study_id, roots):
         except Exception as error:
             issues.append(dict(study_id=study_id, file=str(path), reason=f"{type(error).__name__}: {error}"))
             continue
-        # Also reject multi-frame files in acquisitions that will be discarded.
-        reject_multiframe(ds, f"{study_id}_{number}", path)
-        groups[number].append((path, ds, acquisition))
+        groups[(uid, number)].append((path, ds, acquisition))
     rows = []
-    for number, items in sorted(groups.items()):
+    for (uid, number), items in sorted(groups.items(), key=lambda item: (item[0][1], item[0][0])):
+        if any(is_projection(ds) for _, ds, _ in items):
+            continue
         acquisitions = [acquisition for _, _, acquisition in items if acquisition is not None]
         chosen = max(acquisitions) if acquisitions else None
         selected = [(path, ds) for path, ds, acquisition in items if acquisition == chosen]
         selected.sort(key=lambda item: (integer(item[1], "InstanceNumber") or 0, str(item[0])))
-        rows.append(dict(unique_id=f"{study_id}_{number}", study_id=study_id, series_number=number,
+        rows.append(dict(unique_id=f"{study_id}_{uid}_{number}", study_id=study_id,
+                         series_instance_uid=uid, series_number=number,
                          study_directory=str(directory),
                          acquisition_number=chosen if chosen is not None else "unknown",
                          file_names=[str(path.relative_to(directory)) for path, _ in selected]))

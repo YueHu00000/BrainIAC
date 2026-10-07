@@ -22,7 +22,7 @@ from brainIAC_pretraining.quality import FIELDS as QUALITY_FIELDS
 from brainIAC_pretraining.quality import build_quality
 
 
-def dicom(root, number, acquisition, instance, description="AX T2", nested=False):
+def dicom(root, number, acquisition, instance, description="AX T2", nested=False, uid=None, image_type=None):
     directory = root / "Study_1"
     if nested:
         directory /= "nested"
@@ -34,7 +34,9 @@ def dicom(root, number, acquisition, instance, description="AX T2", nested=False
     ds = FileDataset(None, {}, file_meta=meta, preamble=b"\0" * 128)
     ds.SOPClassUID, ds.SOPInstanceUID = meta.MediaStorageSOPClassUID, meta.MediaStorageSOPInstanceUID
     ds.StudyInstanceUID = "1.2.3"
-    ds.SeriesInstanceUID = f"1.2.3.{number}"
+    ds.SeriesInstanceUID = uid if uid is not None else f"1.2.3.{number}"
+    if image_type is not None:
+        ds.ImageType = image_type
     ds.FrameOfReferenceUID = "1.2.4"
     ds.Modality, ds.SeriesNumber, ds.SeriesDescription = "MR", number, description
     if acquisition is not None:
@@ -44,13 +46,15 @@ def dicom(root, number, acquisition, instance, description="AX T2", nested=False
     ds.PixelSpacing, ds.SliceThickness, ds.SpacingBetweenSlices = [1, 1], 5, 7
     ds.ImageOrientationPatient = [1, 0, 0, 0, 1, 0]
     ds.ImagePositionPatient = [0, 0, instance * 7]
-    path = directory / f"s{number}_a{acquisition}_i{instance}.dcm"
+    suffix = f"_uid{uid}" if uid is not None else ""
+    path = directory / f"s{number}_a{acquisition}_i{instance}{suffix}.dcm"
     ds.save_as(path, enforce_file_format=True)
     return path
 
 
-def rows(unique_id="Study_1_10", **updates):
-    manifest = dict(unique_id=unique_id, study_id="Study_1", series_number="10",
+def rows(unique_id="Study_1_1.2.3.10_10", **updates):
+    uid, number = unique_id.removeprefix("Study_1_").split("_")
+    manifest = dict(unique_id=unique_id, study_id="Study_1", series_instance_uid=uid, series_number=number,
                     study_directory="source/Study_1", acquisition_number="2",
                     file_names=json.dumps(["nested/a.dcm", "nested/b.dcm"]))
     selected = dict(manifest, file_count="23", frame_count="23", unique_slice_count="23",
@@ -75,11 +79,61 @@ class InventoryTests(unittest.TestCase):
         dicom(root, 3, 1, 1, description="LOCALIZER")
         manifest, issues = build_manifest(["Study_1"], [root])
         assert not issues
-        assert [row["unique_id"] for row in manifest] == ["Study_1_1", "Study_1_2", "Study_1_3"]
+        assert [row["unique_id"] for row in manifest] == ["Study_1_1.2.3.1_1", "Study_1_1.2.3.2_2", "Study_1_1.2.3.3_3"]
         assert manifest[0]["acquisition_number"] == 10
         assert all("a10" in name for name in json.loads(manifest[0]["file_names"]))
         assert json.loads(manifest[1]["file_names"])[0].startswith("nested")
         assert list(manifest[0]) == MANIFEST_FIELDS
+
+    def test_same_series_number_separates_uids_and_selects_acquisitions_independently(self):
+        root = self.tmp_path / "dicom"
+        for uid, acquisitions in (("1.2.3.20", (1, 9)), ("1.2.3.21", (2, 3))):
+            for acquisition in acquisitions:
+                dicom(root, 10, acquisition, 1, uid=uid)
+        manifest, issues = build_manifest(["Study_1"], [root])
+        self.assertFalse(issues)
+        self.assertEqual([row["unique_id"] for row in manifest],
+                         ["Study_1_1.2.3.20_10", "Study_1_1.2.3.21_10"])
+        self.assertEqual([row["series_instance_uid"] for row in manifest], ["1.2.3.20", "1.2.3.21"])
+        self.assertEqual([row["acquisition_number"] for row in manifest], [9, 3])
+        self.assertIn("a9", json.loads(manifest[0]["file_names"])[0])
+        self.assertIn("a3", json.loads(manifest[1]["file_names"])[0])
+
+    def test_projection_excludes_whole_group_including_discarded_acquisitions(self):
+        root = self.tmp_path / "dicom"
+        dicom(root, 1, 1, 1, description=" pjn ")
+        dicom(root, 1, 2, 1, description="AX T1")
+        dicom(root, 2, 1, 1, description="fl:a/pjn")
+        dicom(root, 3, 1, 1, description="FL:B/PJN")
+        dicom(root, 4, 1, 1, description="AX T1", image_type=["DERIVED", "PJN"])
+        dicom(root, 5, 1, 1, description="AX T1", image_type=["DERIVED", "PROJECTION IMAGE"])
+        dicom(root, 6, 1, 1, description="FL:A/AX T1", image_type=["DERIVED", "SECONDARY"])
+        dicom(root, 7, 1, 1, description="AX PJN SERIES")
+        manifest, issues = build_manifest(["Study_1"], [root])
+        self.assertFalse(issues)
+        self.assertEqual([row["series_number"] for row in manifest], [6, 7])
+
+    def test_missing_uid_is_reported_and_skipped(self):
+        root = self.tmp_path / "dicom"
+        path = dicom(root, 1, 1, 1)
+        dataset = pydicom.dcmread(path)
+        del dataset.SeriesInstanceUID
+        dataset.save_as(path, enforce_file_format=True)
+        dicom(root, 2, 1, 1)
+        manifest, issues = build_manifest(["Study_1"], [root])
+        self.assertEqual([row["unique_id"] for row in manifest], ["Study_1_1.2.3.2_2"])
+        self.assertEqual(issues, [dict(study_id="Study_1", file=str(path),
+                                      reason="ValueError: Missing SeriesInstanceUID")])
+
+    def test_multiframe_projection_without_uid_is_still_fatal(self):
+        root = self.tmp_path / "dicom"
+        path = dicom(root, 1, 1, 1, description="PJN")
+        dataset = pydicom.dcmread(path)
+        del dataset.SeriesInstanceUID
+        dataset.NumberOfFrames = 3
+        dataset.save_as(path, enforce_file_format=True)
+        with self.assertRaisesRegex(ValueError, "unsupported multi-frame DICOM"):
+            build_manifest(["Study_1"], [root])
 
 
     def test_known_dual_23_slice_case_and_missing_acquisition(self):
@@ -105,7 +159,7 @@ class InventoryTests(unittest.TestCase):
         dataset.NumberOfFrames = 23
         dataset.save_as(path, enforce_file_format=True)
         dicom(root, 10, 2, 1)
-        with self.assertRaisesRegex(ValueError, "Study_1_10: unsupported multi-frame DICOM"):
+        with self.assertRaisesRegex(ValueError, "Study_1_1.2.3.10_10: unsupported multi-frame DICOM"):
             build_manifest(["Study_1"], [root])
 
 
@@ -137,15 +191,15 @@ class InventoryTests(unittest.TestCase):
         for changes, reason in cases:
             with self.subTest(changes=changes):
                 manifest1, selected1 = rows(**changes)
-                manifest2, selected2 = rows("Study_1_11")
+                manifest2, selected2 = rows("Study_1_1.2.3.11_11")
                 accepted, rejected = build_quality([manifest1, manifest2], [selected1, selected2])
-                self.assertEqual(accepted, [{"unique_id": "Study_1_11", "frame_count": 23, "coverage_mm": 154.0}])
-                self.assertEqual(rejected, [{"unique_id": "Study_1_10", "reason": reason}])
+                self.assertEqual(accepted, [{"unique_id": "Study_1_1.2.3.11_11", "frame_count": 23, "coverage_mm": 154.0}])
+                self.assertEqual(rejected, [{"unique_id": "Study_1_1.2.3.10_10", "reason": reason}])
                 self.assertEqual(list(accepted[0]), QUALITY_FIELDS)
 
     def test_multiframe_aborts_quality_instead_of_skipping(self):
         manifest, selected = rows(file_count="1")
-        with self.assertRaisesRegex(ValueError, "Study_1_10.*file_count=1, frame_count=23"):
+        with self.assertRaisesRegex(ValueError, "Study_1_1.2.3.10_10.*file_count=1, frame_count=23"):
             build_quality([manifest], [selected])
 
     def test_multiframe_cli_fails_without_publishing_quality_csv(self):
@@ -162,16 +216,16 @@ class InventoryTests(unittest.TestCase):
                                  "--manifest", str(self.tmp_path / "manifest.csv"),
                                  "--output-dir", str(output)], capture_output=True, text=True)
         self.assertNotEqual(result.returncode, 0)
-        self.assertIn("Study_1_10", result.stderr)
+        self.assertIn("Study_1_1.2.3.10_10", result.stderr)
         self.assertFalse((output / "image_number_coverage.csv").exists())
 
 
     def test_missing_statistics_and_unknown_coverage(self):
         manifest1, selected1 = rows(coverage_mm="nan")
-        manifest2, _ = rows("Study_1_11")
+        manifest2, _ = rows("Study_1_1.2.3.11_11")
         accepted, rejected = build_quality([manifest1, manifest2], [selected1])
-        assert accepted == [{"unique_id": "Study_1_10", "frame_count": 23, "coverage_mm": ""}]
-        assert rejected == [{"unique_id": "Study_1_11", "reason": "missing_statistics"}]
+        assert accepted == [{"unique_id": "Study_1_1.2.3.10_10", "frame_count": 23, "coverage_mm": ""}]
+        assert rejected == [{"unique_id": "Study_1_1.2.3.11_11", "reason": "missing_statistics"}]
 
 
     def test_duplicate_id_stops_instead_of_choosing_silently(self):
@@ -224,7 +278,7 @@ class InventoryTests(unittest.TestCase):
         dicom(root, 10, 3, 1)
         accepted, rejected = build_quality(manifest)
         self.assertFalse(rejected)
-        self.assertEqual(accepted, [dict(unique_id="Study_1_10", frame_count=23, coverage_mm=154.0)])
+        self.assertEqual(accepted, [dict(unique_id="Study_1_1.2.3.10_10", frame_count=23, coverage_mm=154.0)])
 
     def test_quality_cli_uses_statistics_without_stat_code_or_dicom_files(self):
         package = self.tmp_path / "src/brainIAC_pretraining"
@@ -251,11 +305,11 @@ class InventoryTests(unittest.TestCase):
                 self.assertEqual(result.returncode, 0, result.stderr)
                 quality = read_rows(output / "image_number_coverage.csv")
                 if label == "accepted":
-                    self.assertEqual(quality, [dict(unique_id="Study_1_10", frame_count="23", coverage_mm="154.0")])
+                    self.assertEqual(quality, [dict(unique_id="Study_1_1.2.3.10_10", frame_count="23", coverage_mm="154.0")])
                 else:
                     self.assertEqual(quality, [])
                     self.assertEqual(read_rows(output / "rejected_quality.csv"),
-                                     [dict(unique_id="Study_1_10", reason="selected_source_mismatch")])
+                                     [dict(unique_id="Study_1_1.2.3.10_10", reason="selected_source_mismatch")])
 
     def test_header_geometry_filters_only_the_affected_series(self):
         root = self.tmp_path / "dicom"
@@ -280,8 +334,8 @@ class InventoryTests(unittest.TestCase):
                 ds.save_as(path, enforce_file_format=True)
         manifest, _ = build_manifest(["Study_1"], [root])
         accepted, rejected = build_quality(manifest)
-        self.assertEqual(accepted, [dict(unique_id="Study_1_10", frame_count=2, coverage_mm=7.0)])
-        self.assertEqual(rejected[0], dict(unique_id="Study_1_11", reason="count_mismatch"))
+        self.assertEqual(accepted, [dict(unique_id="Study_1_1.2.3.10_10", frame_count=2, coverage_mm=7.0)])
+        self.assertEqual(rejected[0], dict(unique_id="Study_1_1.2.3.11_11", reason="count_mismatch"))
         self.assertEqual([row["reason"] for row in rejected[1:]], ["unknown_or_invalid_count"] * 4)
 
     def test_single_frame_shared_geometry_and_plane_tolerance(self):
@@ -302,12 +356,12 @@ class InventoryTests(unittest.TestCase):
         manifest, _ = build_manifest(["Study_1"], [root])
         accepted, rejected = build_quality(manifest)
         self.assertEqual(accepted, [])
-        self.assertEqual(rejected, [dict(unique_id="Study_1_10", reason="count_mismatch")])
+        self.assertEqual(rejected, [dict(unique_id="Study_1_1.2.3.10_10", reason="count_mismatch")])
         (root / "Study_1/s10_a2_i2.dcm").unlink()
         manifest, _ = build_manifest(["Study_1"], [root])
         accepted, rejected = build_quality(manifest)
         self.assertFalse(rejected)
-        self.assertEqual(accepted, [dict(unique_id="Study_1_10", frame_count=2, coverage_mm=7.0)])
+        self.assertEqual(accepted, [dict(unique_id="Study_1_1.2.3.10_10", frame_count=2, coverage_mm=7.0)])
 
 if __name__ == "__main__":
     unittest.main()

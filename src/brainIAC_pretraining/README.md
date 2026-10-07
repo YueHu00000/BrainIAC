@@ -1,6 +1,8 @@
 # BrainIAC 全 Series 自监督预训练
 
-实现日期：2026-10-04。每个 series 独立处理，ID 为 `{Study_ID}_{SeriesNumber}`，使用最大的数值 AcquisitionNumber，不要求 T1/T2 配对。保留原始 DICOM 和旧 embedding 流程。
+更新日期：2026-10-06。每个 series 独立处理，ID 为 `{Study_ID}_{SeriesInstanceUID}_{SeriesNumber}`。在每个 study 的 `(SeriesInstanceUID, SeriesNumber)` 分组内使用最大的数值 AcquisitionNumber，不要求 T1/T2 配对。保留原始 DICOM 和旧 embedding 流程。
+
+manifest 排除投影序列：`ImageType` 含 `PJN` 或 `PROJECTION IMAGE`，或 `SeriesDescription` 为 `PJN`、以 `/PJN` 结尾（不区分大小写），整个 UID/SeriesNumber 组都不进入 manifest。`FL:A/AX T1` 等普通滤波序列仍保留。缺失 SeriesInstanceUID 的文件记录到 manifest_issues.csv 并跳过，不编造 UID。
 
 ## 输入、输出和失败行为
 
@@ -17,7 +19,7 @@ quality 正式结果只有 `unique_id,frame_count,coverage_mm`。不记录 file_
 
 coverage 按切片方向法向量投影后计算首末独立切片平面中心跨度，单位 mm；独立平面容差仍为 0.01 mm，方向容差仍为 1e-4。frame 和 coverage 的阈值只在 exclude 执行，严格小于阈值排除，等于阈值保留。缺失质量记录或未知 coverage 也排除并说明原因。
 
-manifest.csv 保存 unique_id、study_id、series_number、study_directory、acquisition_number、file_names；file_names 是 JSON 相对路径列表。quality 指定统计 CSV 时确认其文件列表、目录及 acquisition 与 manifest 一致，不读取 DICOM；未指定统计 CSV 时只读取 manifest 列出的 header，不重新扫描目录或选择 acquisition，不读取像素。
+manifest.csv 保存 unique_id、study_id、series_instance_uid、series_number、study_directory、acquisition_number、file_names；file_names 是 JSON 相对路径列表。quality 指定统计 CSV 时使用 `summary_dicom_SeriesInstanceUID.py` 产生的原始 selected_series.csv，确认其文件列表、目录及 acquisition 与 manifest 一致，不读取 DICOM；未指定统计 CSV 时只读取 manifest 列出的 header，不重新扫描目录或选择 acquisition，不读取像素。旧 `{Study_ID}_{SeriesNumber}` 格式的统计 CSV 会明确报错。
 
 2026-10-06：六个阶段均不导入或调用 `stat/` 中的程序文件。扫描与必要的数量、coverage 计算放在本目录的 `_dicom.py`；`stat/` 继续作为独立统计工具保留。quality 可以通过 `--selected-csv` 使用 stat 输出的 CSV，CSV 可存放在任意目录；不指定该参数也能运行。
 
@@ -49,19 +51,20 @@ python src/brainIAC_pretraining/manifest.py --csv resources/labels.csv --folder-
 
 folder list 一行一个 DICOM 根目录；相对路径以 folder list 所在目录解析。labels 默认使用 Study_ID 列。manifest 使用本目录的扫描函数，检测到任意扫描到的 MR 文件 NumberOfFrames > 1 时立即报出 ID、路径并中断，包含之后会被 acquisition 选择舍弃的文件。无需预先运行统计程序。
 
-生成质量 CSV：
+先运行新版统计，再生成质量 CSV：
 
 ```bash
-python src/brainIAC_pretraining/quality.py --manifest work/pretraining/inventory/manifest.csv --output-dir work/pretraining/quality
+python src/brainIAC_pretraining/stat/summary_dicom_SeriesInstanceUID.py --csv resources/labels.csv --folder-list resources/folders.txt --output-dir work/pretraining/stats_uid
+python src/brainIAC_pretraining/quality.py --manifest work/pretraining/inventory/manifest.csv --selected-csv work/pretraining/stats_uid/selected_series.csv --output-dir work/pretraining/quality
 ```
 
-已有全 series 统计 CSV 时可直接使用，避免重读 DICOM：
+新版统计的第二阶段仍用于独立分析 coverage 与切片位置：
 
 ```bash
-python src/brainIAC_pretraining/quality.py --manifest work/pretraining/inventory/manifest.csv --selected-csv work/pretraining/stats/selected_series.csv --output-dir work/pretraining/quality
+python src/brainIAC_pretraining/stat/summary_dicom_SeriesInstanceUID_v2.py --selected-csv work/pretraining/stats_uid/selected_series.csv --output-dir work/pretraining/stats_uid_v2 --coverage-threshold-mm 100 --position-error-percent 20
 ```
 
-`--selected-csv` 使用全 series 的原始 `selected_series.csv`，需包含 unique_id、选中文件信息、file_count、frame_count、unique_slice_count 和 coverage_mm；不使用旧 T1/T2 两行一个 study 的 CSV。缺少某个 unique_id 或选中文件不一致时记录到 rejected_quality.csv。
+quality 的 `--selected-csv` 使用新版第一阶段的原始 `selected_series.csv`，需包含新 unique_id、series_instance_uid、选中文件信息、file_count、frame_count、unique_slice_count 和 coverage_mm；不使用旧统计或 v2 的匿名分析报告。统计保留所有 MR（含 PJN），quality 只处理 manifest 中的 ID。缺少某个 unique_id 或选中文件不一致时记录到 rejected_quality.csv。仍可省略 `--selected-csv`，直接读取 manifest 所列 DICOM headers。
 
 转换 manifest 中的全部 series：
 
@@ -98,6 +101,8 @@ batch size 和 workers 是机器资源相关的运行参数，上述值仅为示
 convert、pre_process 在隔离临时目录计算，完成后发布正式 `<ID>.nii.gz`；再次运行同一命令按正式输出文件存在跳过，不额外读取或校验完成文件。临时目录不计入完成清单。批次结束或正常 KeyboardInterrupt 时，完成清单按正式输出目录重建；机器被强制终止后再次运行也会重建。
 
 因此续跑必须使用同一队列、同一选中 acquisition、同一参数。改变数据来源或预处理参数时使用新输出目录。完成文件不会自动重算，已排除的图像也不会自动恢复。
+
+从旧 ID 切换到 UID ID 时，重新生成统计和 manifest，使用新的 raw、processed、excluded_preprocess 与训练输出目录。旧文件、CSV 和 checkpoint 不自动改名或迁移；不要把两种 ID 的文件混在同一目录，目录重扫会把所有正式 NIfTI 纳入完成清单。UID 中的点号在 `<unique_id>.nii.gz` 文件名中完整保留。
 
 convert_errors.csv、pre_process_errors.csv 记录最近一次运行失败的 unique_id 和原因。程序遇到错误继续时仍可正常结束，必须查看报告以确认哪些 series 完成。
 

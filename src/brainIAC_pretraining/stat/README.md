@@ -1,4 +1,38 @@
-# 全 series 统计：按唯一 ID 选择最大 acquisition
+# 全 series 统计：SeriesInstanceUID 唯一 ID 与最大 acquisition
+
+## 当前版本：按 SeriesInstanceUID 区分 series
+
+新入口为 `summary_dicom_SeriesInstanceUID.py` 和 `summary_dicom_SeriesInstanceUID_v2.py`。旧 `summariy_dicom.py`（原文件名有拼写错误）及 `summary_dicom_v2.py` 保留，供旧结果复现。
+
+- `unique_id = "{Study_ID}_{SeriesInstanceUID}_{SeriesNumber}"`；CSV 同时保存标量 `series_instance_uid`。`SeriesNumber` 按整数处理，不包含 AcquisitionNumber。
+- 每个 study 内按 `(SeriesInstanceUID, SeriesNumber)` 分组；相同 SeriesNumber、不同 UID 的图像不会再合并。每组独立选择数值最大的 AcquisitionNumber，再计算统计。
+- 缺少 SeriesInstanceUID 的 MR 文件写入 `scan_issues.csv` 后跳过，不生成替代 UID。受扫描问题影响的 study 保留 `incomplete`／`partial_study_scan` 标记。
+- 第一步仍统计全部 MR，包含 `PJN`、`FL:A/PJN`、`FL:B/PJN` 和 `ImageType=PROJECTION IMAGE`，以便理解投影图像和 unknown；预训练 manifest 单独排除投影图像。
+- 新 v2 要求 `series_instance_uid` 列，并核对完整 unique_id；旧 ID 的 CSV 会报错，需要重新运行新第一步。覆盖、位置和重复平面的统计规则沿用旧版。
+- 第一步 `selected_series.csv` 保存完整 ID 和 UID，是预训练 quality 的 `--selected-csv` 输入。v2 的 `csv/` 仍采用索引、不公开 UID；`csv_with_abnormal_study_ids/` 仅在异常行的 `abnormal_unique_ids` 中记录完整新 ID。v2 的这两套报告不作为 quality 输入。
+
+依赖为 Python、numpy、pandas、pydicom；新入口与 `_series_statistics.py` 放在同一目录。
+
+```bash
+python src/brainIAC_pretraining/stat/summary_dicom_SeriesInstanceUID.py \
+  --csv resources/labels.csv \
+  --folder-list resources/folders.txt \
+  --output-dir resources/all_series_uid_stats
+
+python src/brainIAC_pretraining/stat/summary_dicom_SeriesInstanceUID_v2.py \
+  --selected-csv resources/all_series_uid_stats/selected_series.csv \
+  --output-dir resources/all_series_uid_quality \
+  --coverage-threshold-mm 100 \
+  --position-error-percent 20
+
+python -m unittest discover -s src/brainIAC_pretraining/stat -p 'test_series_instance_uid_statistics.py' -v
+```
+
+新版本的 7 项合成测试覆盖：SeriesNumber 冲突时独立 UID 分组及各自最大 acquisition、同 UID 不同 SeriesNumber、缺失 UID 报告、统计保留 PJN、v2 拒绝旧 schema/ID、仅排除重复平面的对应 UID，以及正常／重复／空队列 CLI 和报告隐私。未在服务器真实 DICOM 数据上运行。
+
+## 旧版入口与历史 CSV 说明
+
+以下说明对应旧的 `{Study_ID}_{SeriesNumber}` 版本，不能用于新版预训练 pipeline 的输入。
 
 这是 `code/single_study_check/summarize_dicom_t1t2.py` 与 `summarize_dicom_t1t2_v2.py` 的新版本，旧程序保留。
 
@@ -76,7 +110,9 @@ python src/brainIAC_pretraining/stat/summary_dicom_v2.py \
 
 缺失几何、缺失 InstanceNumber、扫描不完整及未建模的 multiframe 位置检查保持 unknown。Enhanced MR 的 acquisition 选择依赖顶层 AcquisitionNumber，不支持按 frame 内的 acquisition 重新选择。阈值 pass 只是这些 header 检查的结果，不等于图像质量、全脑覆盖或模型可用性已获确认。
 
-## 逐 series 低 coverage 临床导出
+## 旧版 CSV 的逐 series 低 coverage 临床导出
+
+此导出器保持旧版行为，只接受旧 `{Study_ID}_{SeriesNumber}` 的统计 CSV；目前不接受 `all_series_uid_stats/selected_series.csv`。下方 `all_series_stats` 指旧版统计目录。
 
 `export_low_coverage_clinical.py` 输出 `coverage_mm < 阈值` 的 `{Study_ID}_{SeriesNumber}`，每个 series 一行，并标注是否是旧 T1/T2 流程实际选中的 series。
 

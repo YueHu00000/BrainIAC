@@ -1,4 +1,4 @@
-"""Build an all-MR-series manifest, keeping the largest AcquisitionNumber."""
+"""Build a non-projection MR manifest, selecting the largest acquisition per UID/number."""
 
 import argparse
 import json
@@ -12,7 +12,7 @@ from brainIAC_pretraining._common import read_rows, validate_id, write_rows
 from brainIAC_pretraining._dicom import inspect_study
 
 
-FIELDS = ["unique_id", "study_id", "series_number", "study_directory",
+FIELDS = ["unique_id", "study_id", "series_instance_uid", "series_number", "study_directory",
           "acquisition_number", "file_names"]
 
 

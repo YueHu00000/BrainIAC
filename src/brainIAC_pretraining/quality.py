@@ -1,4 +1,4 @@
-"""Read series statistics or DICOM headers; record only frame count and coverage."""
+"""Read UID-based series statistics or headers; record only frame count and coverage."""
 
 import argparse
 import json
@@ -56,6 +56,19 @@ def build_quality(manifest, selected=None):
         for row in rows:
             unique_id = row["unique_id"]
             validate_id(unique_id)
+            try:
+                uid = row["series_instance_uid"]
+                expected = f"{row['study_id']}_{uid}_{int(row['series_number'])}"
+            except (KeyError, ValueError, TypeError) as error:
+                raise ValueError(
+                    f"{name}: use the SeriesInstanceUID manifest/statistics CSV "
+                    "with study_id, series_instance_uid and series_number"
+                ) from error
+            if not uid or unique_id != expected:
+                raise ValueError(
+                    f"{name}: unique_id must equal "
+                    f"{{Study_ID}}_{{SeriesInstanceUID}}_{{SeriesNumber}}: {unique_id}"
+                )
             if unique_id in table:
                 raise ValueError(f"Duplicate unique_id in {name}: {unique_id}")
             table[unique_id] = row
@@ -87,7 +100,8 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--manifest", required=True, type=Path)
     parser.add_argument("--selected-csv", type=Path,
-                        help="Use an existing all-series statistics CSV instead of reading DICOM headers")
+                        help="selected_series.csv from summary_dicom_SeriesInstanceUID.py; "
+                             "omitting this option reads manifest-listed DICOM headers")
     parser.add_argument("--output-dir", required=True, type=Path)
     args = parser.parse_args()
     selected = read_rows(args.selected_csv) if args.selected_csv is not None else None
