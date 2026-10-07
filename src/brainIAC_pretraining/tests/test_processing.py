@@ -56,6 +56,35 @@ class ProcessingTests(unittest.TestCase):
     def tearDown(self):
         self.temporary.cleanup()
 
+    def test_convert_cli_needs_only_manifest_and_resumes_all_series(self):
+        source = self.root / "dicom"
+        source.mkdir()
+        rows = []
+        for study, value in (("first", 100), ("second", 200)):
+            series_uid = generate_uid()
+            names = [f"{study}_{index}.dcm" for index in range(3)]
+            for index, name in enumerate(names):
+                write_dicom(source / name, series_uid, 1, index, value + index)
+            rows.append(dict(unique_id=f"{study}_10", study_directory=str(source),
+                             file_names=json.dumps(names)))
+        manifest = self.root / "manifest.csv"
+        write_rows(manifest, rows, list(rows[0]))
+        output = self.root / "raw"
+        command = [sys.executable, str(Path(convert.__file__)),
+                   "--manifest", str(manifest), "--output-dir", str(output)]
+        result = subprocess.run(command, capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(read_ids(output / "converted.csv"), ["first_10", "second_10"])
+        for study, value in (("first", 100), ("second", 200)):
+            image = sitk.ReadImage(str(output / f"{study}_10.nii.gz"))
+            np.testing.assert_array_equal(sitk.GetArrayFromImage(image)[:, 0, 0],
+                                          [value, value + 1, value + 2])
+        timestamps = {path.name: path.stat().st_mtime_ns for path in output.glob("*.nii.gz")}
+        result = subprocess.run(command, capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(timestamps, {path.name: path.stat().st_mtime_ns for path in output.glob("*.nii.gz")})
+        self.assertEqual(read_rows(output / "convert_errors.csv"), [])
+
     def test_convert_exact_selected_acquisition_failure_and_resume(self):
         dicom = self.root / "dicom"
         dicom.mkdir()
@@ -71,22 +100,21 @@ class ProcessingTests(unittest.TestCase):
         base = dict(study_id="study", series_number="10", study_directory=str(dicom), acquisition_number="2")
         rows = [dict(base, unique_id="missing_10", file_names=json.dumps(["missing.dcm"])),
                 dict(base, unique_id="study_10", file_names=json.dumps(selected)),
-                dict(base, unique_id="excluded_10", file_names=json.dumps(["also_missing.dcm"]))]
-        manifest, quality = self.root / "manifest.csv", self.root / "quality.csv"
+                dict(base, unique_id="also_missing_11", file_names=json.dumps(["also_missing.dcm"]))]
+        manifest = self.root / "manifest.csv"
         write_rows(manifest, rows, fields)
-        write_rows(quality, [{"unique_id": "missing_10"}, {"unique_id": "study_10"}], ["unique_id"])
         output = self.root / "raw"
-        self.assertEqual(convert.convert_manifest(manifest, quality, output), ["study_10"])
+        self.assertEqual(convert.convert_manifest(manifest, output), ["study_10"])
         image = sitk.ReadImage(str(output / "study_10.nii.gz"))
         self.assertEqual(image.GetSize(), (4, 4, 3))
         np.testing.assert_array_equal(sitk.GetArrayFromImage(image)[:, 0, 0], [200, 201, 202])
-        self.assertEqual(read_ids(output / "convert_errors.csv"), ["missing_10"])
-        self.assertFalse((output / "excluded_10.nii.gz").exists())
+        self.assertEqual(read_ids(output / "convert_errors.csv"), ["missing_10", "also_missing_11"])
+        self.assertFalse((output / "also_missing_11.nii.gz").exists())
         (output / "previous_1.nii.gz").write_bytes(b"existing final output")
         # Completed outputs skip without opening or validating the NIfTI.
         with patch.object(sitk.ImageSeriesReader, "Execute", side_effect=AssertionError("must skip")):
             convert.convert_series(rows[1], output)
-        self.assertIn("previous_1", convert.convert_manifest(manifest, quality, output))
+        self.assertIn("previous_1", convert.convert_manifest(manifest, output))
 
     def test_preprocess_csv_only_continues_failures_and_omits_masks(self):
         raw, output = self.root / "raw", self.root / "processed"
@@ -161,22 +189,21 @@ class ProcessingTests(unittest.TestCase):
         self.assertFalse((output / "volume_0000.nii.gz").exists())
 
     def test_conversion_rejects_4d_and_overlapping_output_before_writing(self):
-        manifest, quality = self.root / "manifest.csv", self.root / "quality.csv"
+        manifest = self.root / "manifest.csv"
         source = self.root / "dicom"
         source.mkdir()
         write_dicom(source / "time.dcm", generate_uid(), 1, 0, 100)
         row = {"unique_id": "time_1", "study_directory": str(source),
                "file_names": json.dumps(["time.dcm"])}
         write_rows(manifest, [row], list(row))
-        write_rows(quality, [{"unique_id": "time_1"}], ["unique_id"])
         image = sitk.GetImageFromArray(np.zeros((2, 3, 4, 5)), isVector=False)
         with patch.object(sitk.ImageSeriesReader, "Execute", return_value=image):
             output = self.root / "raw"
-            self.assertEqual(convert.convert_manifest(manifest, quality, output), [])
+            self.assertEqual(convert.convert_manifest(manifest, output), [])
         self.assertIn("scalar 3D", read_rows(output / "convert_errors.csv")[0]["reason"])
         overlapping = source / "raw"
         with self.assertRaisesRegex(ValueError, "must not overlap"):
-            convert.convert_manifest(manifest, quality, overlapping)
+            convert.convert_manifest(manifest, overlapping)
         self.assertFalse(overlapping.exists())
         converted = self.root / "converted.csv"
         write_rows(converted, [{"unique_id": "time_1"}], ["unique_id"])
@@ -193,17 +220,16 @@ class ProcessingTests(unittest.TestCase):
         dataset.NumberOfFrames = 2
         dataset.PixelData *= 2
         dataset.save_as(dicom, enforce_file_format=True)
-        manifest, quality = self.root / "manifest.csv", self.root / "quality.csv"
+        manifest = self.root / "manifest.csv"
         row = {"unique_id": "multi_1", "study_directory": str(source),
                "file_names": json.dumps(["multi.dcm"])}
         write_rows(manifest, [row, dict(row, unique_id="later_2")], list(row))
-        write_rows(quality, [{"unique_id": "multi_1"}, {"unique_id": "later_2"}], ["unique_id"])
         output = self.root / "raw"
         output.mkdir()
         (output / "previous_3.nii.gz").write_bytes(b"existing completed output")
         with patch.object(convert, "convert_series", wraps=convert.convert_series) as convert_one:
             with self.assertRaisesRegex(MultiFrameDicomError, "multi_1.*NumberOfFrames=2"):
-                convert.convert_manifest(manifest, quality, output)
+                convert.convert_manifest(manifest, output)
         self.assertEqual(convert_one.call_count, 1)
         self.assertEqual(read_ids(output / "converted.csv"), ["previous_3"])
         errors = read_rows(output / "convert_errors.csv")

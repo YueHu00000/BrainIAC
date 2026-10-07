@@ -8,7 +8,7 @@
 |---|---|---|---|
 | manifest | labels CSV、folder list | manifest.csv | 扫描问题记录；多帧 MR DICOM 报错中断 |
 | quality | manifest.csv、可选的 selected_series.csv；未指定统计 CSV 时读取 DICOM header | image_number_coverage.csv | 多帧或文件数与 frame 数不一致报错中断；独立切片数不一致筛掉对应 series |
-| convert | manifest.csv、质量 CSV | raw/<ID>.nii.gz、converted.csv | 多帧 DICOM 中断；其他单 series 转换错误报告后继续 |
+| convert | manifest.csv | raw/<ID>.nii.gz、converted.csv | 多帧 DICOM 中断；其他单 series 转换错误报告后继续 |
 | pre_process | converted.csv、raw 目录 | processed/<ID>.nii.gz、pre_process.csv | 单 series 失败报告后继续 |
 | exclude | 质量 CSV、pre_process.csv、processed 目录 | excluded_preprocess/、final_pre_process.csv | 移动冲突报错，不覆盖 |
 | train | final_pre_process.csv、processed 目录 | 日志、完整 checkpoint | 直接读取；任何读取、增强、训练错误中断 |
@@ -22,6 +22,8 @@ manifest.csv 保存 unique_id、study_id、series_number、study_directory、acq
 2026-10-06：六个阶段均不导入或调用 `stat/` 中的程序文件。扫描与必要的数量、coverage 计算放在本目录的 `_dicom.py`；`stat/` 继续作为独立统计工具保留。quality 可以通过 `--selected-csv` 使用 stat 输出的 CSV，CSV 可存放在任意目录；不指定该参数也能运行。
 
 converted.csv、pre_process.csv 和 final_pre_process.csv 均只有 unique_id 一列。目录提供文件位置，文件名统一为 `<unique_id>.nii.gz`。训练只使用 final_pre_process.csv 所列文件，不预先核对目录，也不自动扫描增加样本。
+
+convert 直接转换 manifest 的全部 series，不读取质量 CSV，`--quality-csv` 参数已移除。quality 可在 convert 之前或之后运行，只需在 exclude 前完成。exclude 依据质量结果执行筛选；quality 未保留的 series 若预处理成功，则按 missing_quality 排除。转换和预处理可能因此处理一些最终被排除的 series。
 
 ## 依赖
 
@@ -61,10 +63,10 @@ python src/brainIAC_pretraining/quality.py --manifest work/pretraining/inventory
 
 `--selected-csv` 使用全 series 的原始 `selected_series.csv`，需包含 unique_id、选中文件信息、file_count、frame_count、unique_slice_count 和 coverage_mm；不使用旧 T1/T2 两行一个 study 的 CSV。缺少某个 unique_id 或选中文件不一致时记录到 rejected_quality.csv。
 
-转换 manifest 与质量 CSV 共同包含的 series：
+转换 manifest 中的全部 series：
 
 ```bash
-python src/brainIAC_pretraining/convert.py --manifest work/pretraining/inventory/manifest.csv --quality-csv work/pretraining/quality/image_number_coverage.csv --output-dir work/pretraining/raw
+python src/brainIAC_pretraining/convert.py --manifest work/pretraining/inventory/manifest.csv --output-dir work/pretraining/raw
 ```
 
 逐 series 预处理：

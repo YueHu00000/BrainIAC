@@ -12,7 +12,7 @@ from tempfile import TemporaryDirectory
 if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from brainIAC_pretraining._common import MultiFrameDicomError, read_ids, read_rows, scan_outputs, validate_id, write_rows
+from brainIAC_pretraining._common import MultiFrameDicomError, read_rows, scan_outputs, validate_id, write_rows
 
 
 def convert_series(row: dict, output_dir: Path) -> Path:
@@ -47,12 +47,11 @@ def convert_series(row: dict, output_dir: Path) -> Path:
     return destination
 
 
-def convert_manifest(manifest: str | Path, quality_csv: str | Path, output_dir: str | Path,
+def convert_manifest(manifest: str | Path, output_dir: str | Path,
                      converted_csv: str | Path | None = None) -> list[str]:
     output_dir = Path(output_dir).resolve()
     converted_csv = Path(converted_csv) if converted_csv else output_dir / "converted.csv"
-    selected_ids = set(read_ids(quality_csv))
-    rows = [row for row in read_rows(manifest) if row["unique_id"] in selected_ids]
+    rows = read_rows(manifest)
     for row in rows:
         source = Path(row["study_directory"]).resolve()
         if source == output_dir or source in output_dir.parents or output_dir in source.parents:
@@ -78,11 +77,10 @@ def convert_manifest(manifest: str | Path, quality_csv: str | Path, output_dir: 
 def main(argv=None) -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--manifest", required=True)
-    parser.add_argument("--quality-csv", required=True)
     parser.add_argument("--output-dir", required=True)
     parser.add_argument("--converted-csv")
     args = parser.parse_args(argv)
-    convert_manifest(args.manifest, args.quality_csv, args.output_dir, args.converted_csv)
+    convert_manifest(args.manifest, args.output_dir, args.converted_csv)
 
 
 if __name__ == "__main__":

@@ -41,15 +41,15 @@ class PipelineTests(unittest.TestCase):
                             "--csv", str(labels), "--folder-list", str(folders),
                             "--output-dir", str(inventory)], check=True, capture_output=True, text=True)
             manifest_csv = inventory / "manifest.csv"
+            raw, processed = root / "raw", root / "processed"
+            self.assertEqual(convert.convert_manifest(manifest_csv, raw),
+                             ["S_1_10", "S_2_10", "S_3_10"])
+            image = sitk.ReadImage(str(raw / "S_1_10.nii.gz"))
+            np.testing.assert_array_equal(sitk.GetArrayFromImage(image)[:, 0, 0], [200, 201, 202])
             accepted, rejected = quality.build_quality(read_rows(manifest_csv))
             self.assertFalse(rejected)
             quality_csv = root / "image_number_coverage.csv"
             write_rows(quality_csv, accepted, quality.FIELDS)
-            raw, processed = root / "raw", root / "processed"
-            self.assertEqual(convert.convert_manifest(manifest_csv, quality_csv, raw),
-                             ["S_1_10", "S_2_10", "S_3_10"])
-            image = sitk.ReadImage(str(raw / "S_1_10.nii.gz"))
-            np.testing.assert_array_equal(sitk.GetArrayFromImage(image)[:, 0, 0], [200, 201, 202])
 
             def imaging(command, **kwargs):
                 inputs = Path(command[command.index("--input_dir") + 1])
