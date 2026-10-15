@@ -30,6 +30,43 @@ python -m unittest discover -s src/brainIAC_pretraining/stat -p 'test_series_ins
 
 新版本的 7 项合成测试覆盖：SeriesNumber 冲突时独立 UID 分组及各自最大 acquisition、同 UID 不同 SeriesNumber、缺失 UID 报告、统计保留 PJN、v2 拒绝旧 schema/ID、仅排除重复平面的对应 UID，以及正常／重复／空队列 CLI 和报告隐私。未在服务器真实 DICOM 数据上运行。
 
+## 复制问题 series 所属的完整 DICOM study 供人工检查
+
+入口为 `copy_problem_dicom_studies.py`。只需新版第一阶段的原始 `selected_series.csv`；其中有完整身份、描述、来源目录及选中最大 acquisition 的 frame_count／coverage_mm，不需要再运行 v2 或拼接 manifest、quality。v2 的分析报告隐藏了正常 ID、路径和描述，quality 不含描述且可能已筛掉部分 series，不能单独作为这里的输入。第一阶段保留 PJN，因此本程序能选出 manifest 已排除的投影序列。
+
+```bash
+python src/brainIAC_pretraining/stat/copy_problem_dicom_studies.py \
+  --selected-csv /reports/all_series_uid_stats/selected_series.csv \
+  --output-dir /data/dicom_manual_review \
+  --frame-count-threshold 20 \
+  --coverage-threshold-mm 100
+```
+
+20 帧、100 mm 仅为示例，两个阈值必须明确指定。以下任一条件满足即记录为问题 series：
+
+- 统计中的 `series_description` 完全不含 T1 或 T2，不区分大小写；例如 PJN、LOCALIZER、仅写 FLAIR 的描述会触发，T2 FLAIR 不会因描述触发。空描述也按不含 T1/T2 处理。
+- `frame_count < --frame-count-threshold`。image count 统一使用 frame_count，不使用 DICOM 文件数或独立平面数。
+- `coverage_mm < --coverage-threshold-mm`。等于阈值不触发；coverage 沿用统计中的首末切片平面中心跨度。
+
+未知、非有限、负数指标不当作低于阈值，写入 unknown_metrics.csv；若描述规则或另一个已知指标已触发，仍复制该 study。这里不额外按 v2 screen_status、位置误差或重复平面判定问题。
+
+输出目录必须尚不存在，且不得与源 study 目录嵌套。程序在每个命中的 Study_ID 下**递归复制整个原 study 文件夹**到 `<output-dir>/<Study_ID>/`，包括正常序列、问题序列、所有 acquisition、嵌套目录和其他原有文件；不只复制统计选中的文件。同一 study 只复制一次，原件保留。CSV 的 study_directory 必须在执行机器上可访问。
+
+| 输出 | 内容 |
+|---|---|
+| `problem_series.csv` | 每个问题 unique_id 一行：study_id、series_instance_uid、series_number、选中的 acquisition_number、frame_count、coverage_mm、series_description、reason、study_directory |
+| `copied_studies.csv` | 每个命中 study 一行，包含来源与目标目录、问题 series 数、copied／copy_failed／pending 状态和错误 |
+| `unknown_metrics.csv` | 数量或 coverage 无法比较的 series，保留完整身份及原因；不把 unknown 当作低值 |
+| `<Study_ID>/` | 对应 study 的完整原始目录副本 |
+
+problem_series.csv 的数量、coverage 和 acquisition 描述统计选中的组，复制目录则包含整个 study。多个问题原因用分号分隔。单个 study 完整复制后才发布正式目录；复制失败记录并继续其他 study，中断时报告仍保留已完成及 pending 状态。已有输出目录拒绝覆盖，再执行需指定新目录。
+
+```bash
+python -m unittest discover -s src/brainIAC_pretraining/stat -p 'test_copy_problem_dicom_studies.py' -v
+```
+
+8 项合成测试覆盖 OR 规则、大小写、严格阈值边界、unknown、完整 study 复制、按 study 去重、原件保留、复制失败继续、目标冲突、身份和来源冲突、空队列及 CLI 输出。
+
 ## 旧版入口与历史 CSV 说明
 
 以下说明对应旧的 `{Study_ID}_{SeriesNumber}` 版本，不能用于新版预训练 pipeline 的输入。
