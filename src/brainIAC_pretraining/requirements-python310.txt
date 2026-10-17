@@ -1,0 +1,19 @@
+# Linux Python 3.10 environment for brainIAC_pretraining.
+# Install the CUDA PyTorch wheels first using create_mamba_env.sh.
+setuptools==80.9.0
+torch==2.5.1
+torchvision==0.20.1
+numpy==1.26.4
+pandas==2.2.3
+pydicom==3.0.1
+SimpleITK==2.4.0
+nibabel==5.4.2
+PyYAML==6.0.2
+monai==1.3.2
+pytorch-lightning==2.6.6
+lightly==1.5.26
+# Bundled HD-BET and MONAI ViT dependencies.
+scipy==1.13.1
+scikit-image==0.21.0
+einops==0.8.1
+tqdm==4.67.1

@@ -35,6 +35,8 @@ convert 直接转换 manifest 的全部 series，不读取质量 CSV，`--qualit
 
 ## 依赖
 
+Linux 服务器可用 [Python 3.10 mamba 环境脚本](MAMBA_ENV.md) 创建预训练专用环境：`bash src/brainIAC_pretraining/create_mamba_env.sh`。该脚本使用本目录独立的依赖表，并自动检查导入和合成数据处理。
+
 先安装运行机器适用的 PyTorch 与对应 torchvision，然后从仓库根目录执行：
 
 ```bash
