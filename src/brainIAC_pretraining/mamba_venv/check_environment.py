@@ -10,7 +10,7 @@ import tempfile
 def main():
     if sys.version_info[:2] != (3, 10):
         raise RuntimeError(f"Python 3.10 required; running {sys.version}")
-    repo_root = Path(__file__).resolve().parents[2]
+    repo_root = Path(__file__).resolve().parents[3]
     sys.path.insert(0, str(repo_root / "src"))
     sys.path.insert(0, str(repo_root / "src/preprocessing"))
 

@@ -5,7 +5,7 @@
 在服务器的 BrainIAC 代码仓库根目录执行：
 
 ```bash
-bash src/brainIAC_pretraining/create_mamba_env.sh
+bash src/brainIAC_pretraining/mamba_venv/create_mamba_env.sh
 mamba activate brainiac_pretrain_py310
 python --version
 ```
@@ -13,7 +13,7 @@ python --version
 也可以指定一个新的环境名：
 
 ```bash
-bash src/brainIAC_pretraining/create_mamba_env.sh brainiac_pretrain_py310_v2
+bash src/brainIAC_pretraining/mamba_venv/create_mamba_env.sh brainiac_pretrain_py310_v2
 mamba activate brainiac_pretrain_py310_v2
 ```
 
@@ -30,7 +30,7 @@ CUDA 安装命令来自 [PyTorch 官方历史版本说明](https://pytorch.org/g
 在分配到的 GPU 节点上再次验证：
 
 ```bash
-python src/brainIAC_pretraining/check_environment.py
+python src/brainIAC_pretraining/mamba_venv/check_environment.py
 ```
 
 只有出现 `CUDA available: True` 和 `GPU tensor operation: OK` 才表示 GPU 基础检查通过。登录节点没有可见 GPU 时会跳过 GPU 检查；完整模型训练、显存容量及真实图像预处理需要在 GPU 作业中验证。
