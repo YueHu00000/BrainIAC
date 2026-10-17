@@ -109,11 +109,12 @@ def geometry(ds):
 def measure_series(row):
     """Read only manifest-listed headers; selection is never rerun here."""
     files = [Path(row["study_directory"]) / name for name in json.loads(row["file_names"])]
-    counts, positions, orientations = [], [], []
+    counts, positions, orientations, descriptions = [], [], [], set()
     coordinate_ids = {key: set() for key in ("StudyInstanceUID", "FrameOfReferenceUID")}
     for path in files:
         ds = pydicom.dcmread(path, stop_before_pixels=True)
         reject_multiframe(ds, row["unique_id"], path)
+        descriptions.add(str(ds.get("SeriesDescription") or "").strip())
         counts.append(numbers(ds.get("NumberOfFrames", 1), 1))
         position, orientation = geometry(ds)
         positions.append(position)
@@ -121,7 +122,8 @@ def measure_series(row):
         for key, values in coordinate_ids.items():
             if ds.get(key):
                 values.add(str(ds.get(key)))
-    result = dict(row, file_count=len(files), frame_count="", unique_slice_count="", coverage_mm="")
+    result = dict(row, series_description=" | ".join(sorted(descriptions)),
+                  file_count=len(files), frame_count="", unique_slice_count="", coverage_mm="")
     if not counts or any(count is None or count[0] != 1 for count in counts):
         return result
     result["frame_count"] = len(counts)

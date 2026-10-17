@@ -17,6 +17,12 @@ manifest 排除投影序列：`ImageType` 含 `PJN` 或 `PROJECTION IMAGE`，或
 
 quality 正式结果只有 `unique_id,frame_count,coverage_mm`。不记录 file_count、unique_slice_count、重复平面、位置检查或 flags。内部从已有统计 CSV 读取数量，或从 manifest 所列 DICOM header 计算数量：未知数量或 frame 数与独立平面数不一致时筛掉该 series，rejected_quality.csv 仅记录 ID 和原因；多帧属于致命错误，不作为普通排除处理。
 
+2026-10-16 新增 `quality_v2.py`：在第一列 unique_id 后插入 series_description，输出列顺序为 `unique_id,series_description,frame_count,coverage_mm`。输入参数、筛选规则和输出文件名与 quality.py 相同；原 quality.py 继续输出三列。指定统计 CSV 时直接读取其 series_description；未指定时从 manifest 选中的 DICOM headers 汇总描述，多个不同描述排序后用 ` | ` 连接。rejected_quality.csv 仍只有 ID 和原因；exclude 按字段名读取，兼容新增描述列。
+
+```bash
+python src/brainIAC_pretraining/quality_v2.py --manifest work/pretraining/inventory/manifest.csv --selected-csv work/pretraining/stats_uid/selected_series.csv --output-dir work/pretraining/quality_v2
+```
+
 coverage 按切片方向法向量投影后计算首末独立切片平面中心跨度，单位 mm；独立平面容差仍为 0.01 mm，方向容差仍为 1e-4。frame 和 coverage 的阈值只在 exclude 执行，严格小于阈值排除，等于阈值保留。缺失质量记录或未知 coverage 也排除并说明原因。
 
 manifest.csv 保存 unique_id、study_id、series_instance_uid、series_number、study_directory、acquisition_number、file_names；file_names 是 JSON 相对路径列表。quality 指定统计 CSV 时使用 `summary_dicom_SeriesInstanceUID.py` 产生的原始 selected_series.csv，确认其文件列表、目录及 acquisition 与 manifest 一致，不读取 DICOM；未指定统计 CSV 时只读取 manifest 列出的 header，不重新扫描目录或选择 acquisition，不读取像素。旧 `{Study_ID}_{SeriesNumber}` 格式的统计 CSV 会明确报错。
