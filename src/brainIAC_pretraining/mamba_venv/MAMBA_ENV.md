@@ -1,23 +1,25 @@
 # BrainIAC pretraining 专用 Python 3.10 环境
 
-适用于 Linux NVIDIA GPU 服务器。服务器须已安装 mamba；默认创建独立环境 `venv`，用于 `src/brainIAC_pretraining` 的 manifest、quality、convert、pre_process、exclude 和 train 程序。
+适用于 Linux NVIDIA GPU 服务器。服务器须已安装 mamba；使用 `--prefix` 按路径创建环境，默认位置为 `/mnt/image_test/C2D2AI/BrainMRI/BrainIAC/pretraining/venv`，环境目录名为 `venv`，用于 `src/brainIAC_pretraining` 的 manifest、quality、convert、pre_process、exclude 和 train 程序。默认位置与执行脚本时的当前目录无关。
 
 在服务器的 BrainIAC 代码仓库根目录执行：
 
 ```bash
 bash src/brainIAC_pretraining/mamba_venv/create_mamba_env.sh
-mamba activate venv
+mamba activate /mnt/image_test/C2D2AI/BrainMRI/BrainIAC/pretraining/venv
 python --version
 ```
 
-也可以指定一个新的环境名：
+如需改用其他位置，也可以传入环境保存路径，例如：
 
 ```bash
-bash src/brainIAC_pretraining/mamba_venv/create_mamba_env.sh venv_v2
-mamba activate venv_v2
+bash src/brainIAC_pretraining/mamba_venv/create_mamba_env.sh /data/BrainIAC/pretraining/venv
+mamba activate /data/BrainIAC/pretraining/venv
 ```
 
-脚本拒绝覆盖同名环境。安装中途失败时保留已创建的环境；可根据错误修复后手动执行剩余命令，或换一个新名称重新创建。
+传入的相对路径以执行命令时的当前目录为基准，并转换为绝对路径。安装完成时会打印可复制的路径激活命令；在其他目录下也可用该绝对路径激活。环境放在默认环境搜索目录之外时，通过路径激活，不使用 `mamba activate venv`；相对路径激活（如 `mamba activate ./venv`）仍受 mamba 支持，这不是禁止相对路径的限制。
+
+脚本拒绝覆盖任何已存在的目标目录、文件或符号链接。安装中途失败时保留已创建的环境；可根据错误修复后手动执行剩余命令，或换一个新路径重新创建。之前按名称创建的环境不会被移动或修改。
 
 环境固定 Python 3.10、PyTorch 2.5.1 / torchvision 0.20.1 的 CUDA 11.8 构建、MONAI 1.3.2、NumPy 1.26.4、Lightning 2.6.6、Lightly 1.5.26 和 setuptools 80.9.0。PyTorch 2.5.1 保留仓库自带 HD-BET 使用的旧 checkpoint 加载默认行为；NumPy < 2 避免旧 MONAI 随机增强的 seed 溢出；setuptools 80.9.0 保留旧依赖需要的 `pkg_resources`。
 
@@ -45,4 +47,4 @@ python src/brainIAC_pretraining/train.py \
   --accelerator gpu --device 0
 ```
 
-如果当前 shell 尚未初始化 mamba，可以先使用 `mamba run -n venv python ...` 运行命令，无需激活。
+如果当前 shell 尚未初始化 mamba，可以先使用 `mamba run --prefix /mnt/image_test/C2D2AI/BrainMRI/BrainIAC/pretraining/venv python ...` 运行命令，无需激活。
