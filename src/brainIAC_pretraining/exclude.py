@@ -33,7 +33,7 @@ def exclusion_reason(row, frame_count_threshold, coverage_threshold_mm):
 
 def exclude_files(quality_csv, pre_process_csv, input_dir, excluded_dir, *,
                   frame_count_threshold, coverage_threshold_mm, final_csv=None,
-                  dry_run=False):
+                  dry_run=False, reason_function=None):
     if (frame_count_threshold < 1 or not math.isfinite(coverage_threshold_mm)
             or coverage_threshold_mm < 0):
         raise ValueError("Require frame_count_threshold >= 1 and finite coverage_threshold_mm >= 0")
@@ -48,6 +48,7 @@ def exclude_files(quality_csv, pre_process_csv, input_dir, excluded_dir, *,
     ids = read_ids(pre_process_csv)
     if len(ids) != len(set(ids)):
         raise ValueError("Duplicate unique_id in preprocessing CSV")
+    reason_function = reason_function or exclusion_reason
     moves = []
     for unique_id in ids:
         validate_id(unique_id)
@@ -55,8 +56,8 @@ def exclude_files(quality_csv, pre_process_csv, input_dir, excluded_dir, *,
         if not source.is_file():
             print(f"[skip] {unique_id}: no remaining preprocess file", flush=True)
             continue
-        reason = exclusion_reason(quality.get(unique_id), frame_count_threshold,
-                                  coverage_threshold_mm)
+        reason = reason_function(quality.get(unique_id), frame_count_threshold,
+                                 coverage_threshold_mm)
         if not reason:
             continue
         target = excluded_dir / source.name

@@ -114,6 +114,14 @@ python src/brainIAC_pretraining/exclude.py --quality-csv work/pretraining/qualit
 
 确认输出后去掉 `--dry-run` 执行移动。dry-run 不创建目录、不写 CSV、不移动文件；实际执行前检查全部同名目标冲突，已排除的原路径再次运行时跳过。excluded_preprocess.csv 保留已移动 ID 和排除原因；final_pre_process.csv 重新读取移动后的正式输出目录生成。
 
+2026-10-16 新增 `exclude_v2.py`，输入使用 quality_v2.py 的四列 CSV。必须同时满足：series_description 含 T1 或 T2（不区分大小写）、frame_count 不小于默认 20 且不大于默认 40、coverage 通过原有阈值。两个数量边界均包含，可用 `--frame-count-min` 和 `--frame-count-max` 调整；coverage 仍通过必需参数 `--coverage-threshold-mm` 指定。缺少 series_description 列会在移动前报错，空描述则排除。原 exclude.py 保留原有筛选行为。
+
+```bash
+python src/brainIAC_pretraining/exclude_v2.py --quality-csv work/pretraining/quality_v2/image_number_coverage.csv --pre-process-csv work/pretraining/processed/pre_process.csv --input-dir work/pretraining/processed --excluded-dir work/pretraining/excluded_preprocess --frame-count-min 20 --frame-count-max 40 --coverage-threshold-mm 100 --dry-run
+```
+
+去掉 `--dry-run` 执行移动。v2 继续生成 excluded_preprocess.csv 和重扫生成的 final_pre_process.csv，保留原冲突检查、移动历史和重复运行跳过规则。新增描述排除原因为 no_t1_t2_in_description，超过数量上限为 high_frame_count；其他数量、coverage 缺失或低值规则沿用原实现。
+
 开始预训练：
 
 ```bash
