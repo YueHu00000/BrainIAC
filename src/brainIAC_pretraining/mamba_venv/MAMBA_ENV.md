@@ -1,20 +1,20 @@
 # BrainIAC pretraining 专用 Python 3.10 环境
 
-适用于 Linux NVIDIA GPU 服务器。服务器须已安装 mamba；默认创建独立环境 `brainiac_pretrain_py310`，用于 `src/brainIAC_pretraining` 的 manifest、quality、convert、pre_process、exclude 和 train 程序。
+适用于 Linux NVIDIA GPU 服务器。服务器须已安装 mamba；默认创建独立环境 `venv`，用于 `src/brainIAC_pretraining` 的 manifest、quality、convert、pre_process、exclude 和 train 程序。
 
 在服务器的 BrainIAC 代码仓库根目录执行：
 
 ```bash
 bash src/brainIAC_pretraining/mamba_venv/create_mamba_env.sh
-mamba activate brainiac_pretrain_py310
+mamba activate venv
 python --version
 ```
 
 也可以指定一个新的环境名：
 
 ```bash
-bash src/brainIAC_pretraining/mamba_venv/create_mamba_env.sh brainiac_pretrain_py310_v2
-mamba activate brainiac_pretrain_py310_v2
+bash src/brainIAC_pretraining/mamba_venv/create_mamba_env.sh venv_v2
+mamba activate venv_v2
 ```
 
 脚本拒绝覆盖同名环境。安装中途失败时保留已创建的环境；可根据错误修复后手动执行剩余命令，或换一个新名称重新创建。
@@ -45,4 +45,4 @@ python src/brainIAC_pretraining/train.py \
   --accelerator gpu --device 0
 ```
 
-如果当前 shell 尚未初始化 mamba，可以先使用 `mamba run -n brainiac_pretrain_py310 python ...` 运行命令，无需激活。
+如果当前 shell 尚未初始化 mamba，可以先使用 `mamba run -n venv python ...` 运行命令，无需激活。

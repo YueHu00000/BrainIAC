@@ -2,7 +2,7 @@
 # Run with bash on Linux; mamba must already be installed.
 set -euo pipefail
 
-env_name="${1:-brainiac_pretrain_py310}"
+env_name="${1:-venv}"
 script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 
 # Creating an environment over an existing prefix can replace its contents.
