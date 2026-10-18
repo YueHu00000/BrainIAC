@@ -1,5 +1,7 @@
 # BrainIAC 全 Series 自监督预训练
 
+新训练模型的独立 embedding 导出入口为 `embed.py`；输入、输出契约和按 Study 续跑示例见 [README_embedding.md](README_embedding.md)。
+
 更新日期：2026-10-06。每个 series 独立处理，ID 为 `{Study_ID}_{SeriesInstanceUID}_{SeriesNumber}`。在每个 study 的 `(SeriesInstanceUID, SeriesNumber)` 分组内使用最大的数值 AcquisitionNumber，不要求 T1/T2 配对。保留原始 DICOM 和旧 embedding 流程。
 
 manifest 排除投影序列：`ImageType` 含 `PJN` 或 `PROJECTION IMAGE`，或 `SeriesDescription` 为 `PJN`、以 `/PJN` 结尾（不区分大小写），整个 UID/SeriesNumber 组都不进入 manifest。`FL:A/AX T1` 等普通滤波序列仍保留。缺失 SeriesInstanceUID 的文件记录到 manifest_issues.csv 并跳过，不编造 UID。
