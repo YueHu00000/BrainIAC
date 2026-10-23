@@ -1,5 +1,56 @@
 # 全 series 统计：SeriesInstanceUID 唯一 ID 与最大 acquisition
 
+## 合作者使用的精简 metadata：直接读取原始 DICOM
+
+新增入口 `export_series_metadata.py`，输入为 Study ID CSV 和 DICOM 根目录列表，**不需要以前的统计输出**。依赖与下方统计入口相同；复制到服务器时同时保留 `_series_statistics.py`。
+
+```bash
+python src/brainIAC_pretraining/stat/export_series_metadata.py \
+  --csv resources/labels.csv \
+  --folder-list resources/folders.txt \
+  --output-dir resources/series_metadata
+
+python -m unittest discover -s src/brainIAC_pretraining/stat -p 'test_export_series_metadata.py' -v
+```
+
+- CSV 默认 ID 列为 `Study_ID`，可用 `--study-id-column` 指定；ID 按文本读取，保留前导零和字面值 `NA`。
+- folder list 为 UTF-8 文本，一行一个根目录；相对路径以列表所在目录解析。每个 study 必须唯一对应一个 `root/Study_ID`，递归扫描其中的 MR DICOM headers。
+- 身份为 `{study_id}_{SeriesInstanceUID}_{SeriesNumber}`。每个组合仅保留数值最大的 AcquisitionNumber；10 大于 9，已知 0 不是缺失。全部 acquisition 缺失或非法时保留全部文件，否则舍弃没有编号的文件；相关问题记入 `scan_issues.csv`。
+- **保留所有可识别的 MR unique_id**，包含 coverage 不足、重复平面、单平面、localizer 和投影图像；不运行第二阶段筛选。身份字段缺失或文件不可读时记录问题，不编造 unique_id。
+- 字段汇总、文件列表和 coverage 全部来自选中的 acquisition。文件按 InstanceNumber、完整路径稳定排序，缺失或非法 InstanceNumber 记录问题。
+
+输出目录必须尚不存在，且位于 DICOM 根目录之外。三个 CSV 均为 UTF-8 BOM，即使没有记录也保留固定表头：
+
+| 文件 | 内容 |
+|---|---|
+| `series_meta.csv` | 每个 unique_id 一行的精简 metadata |
+| `series_multivalue.csv` | `unique_id,multiple_fields`，只记录四个字段存在不同非缺失值的 series |
+| `scan_issues.csv` | `study_id,unique_id,file,reason`，记录目录、读取、身份、缺失字段和 coverage 无法计算等问题 |
+
+主表固定列：
+
+```text
+unique_id,study_id,SeriesInstanceUID,SeriesNumber,SeriesDescription,AcquisitionNumber,ImageType,SliceThickness,SpacingBetweenSlices,dicom_file_list,coverage_mm
+```
+
+`SeriesDescription`、`ImageType`、`SliceThickness`、`SpacingBetweenSlices`：对选中组的非缺失值去重，一个值输出标量，多个值输出 JSON 列表。数值 5、5.0、5.000 视为相同，不提前四舍五入合并不同值；全部缺失输出 `unknown`，部分缺失保留已知值并记录问题。层厚和层间距读取普通顶层及 Enhanced MR shared/per-frame PixelMeasures；acquisition 选择仍基于顶层 AcquisitionNumber。
+
+`ImageType` 将每个文件的完整有序组成项用反斜杠连接，例如 `ORIGINAL\PRIMARY\M`。它整体算一个值；只有不同完整组合才触发多值记录。`multiple_fields` 示例为 `["SeriesDescription", "SliceThickness"]`，每个 unique_id 至多一行。
+
+`dicom_file_list` 始终是 JSON 列表，**只保留文件名，不含目录和扩展名**：`acq2/IM0001.dcm` 输出为 `IM0001`。无扩展名时保留原文件名；不同目录下文件名相同的条目仍分别保留，不去重。
+
+`coverage_mm` 沿用现有几何计算：有效一致几何下，首末独立切片平面中心的投影跨度，单位 mm；只有一个平面时为 0，无法计算时为 `unknown`，均保留该 unique_id。它不是按文件数乘层厚估算，也不是全脑覆盖确认。
+
+CSV 中的列表使用 `json.loads()` 解析，不按逗号手工拆分。例如：
+
+```python
+import json
+import pandas as pd
+
+table = pd.read_csv("series_meta.csv", keep_default_na=False)
+files = json.loads(table.iloc[0]["dicom_file_list"])
+```
+
 ## 当前版本：按 SeriesInstanceUID 区分 series
 
 新入口为 `summary_dicom_SeriesInstanceUID.py` 和 `summary_dicom_SeriesInstanceUID_v2.py`。旧 `summariy_dicom.py`（原文件名有拼写错误）及 `summary_dicom_v2.py` 保留，供旧结果复现。
