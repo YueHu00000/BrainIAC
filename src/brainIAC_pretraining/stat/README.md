@@ -1,6 +1,6 @@
 # 全 series 统计：SeriesInstanceUID 唯一 ID 与最大 acquisition
 
-## 合作者使用的精简 metadata：直接读取原始 DICOM
+## 精简 metadata：直接读取原始 DICOM
 
 新增入口 `export_series_metadata.py`，输入为 Study ID CSV 和 DICOM 根目录列表，**不需要以前的统计输出**。依赖与下方统计入口相同；复制到服务器时同时保留 `_series_statistics.py`。
 
