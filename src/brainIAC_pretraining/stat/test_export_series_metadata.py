@@ -1,6 +1,5 @@
 """Direct-DICOM metadata export regressions; synthetic headers need no pixels."""
 
-import json
 import math
 import subprocess
 import sys
@@ -89,7 +88,7 @@ class MetadataExportTests(unittest.TestCase):
         rows, multi, _ = self.inspect()
         self.assertEqual(rows[0]["SliceThickness"], 5.0)
         self.assertEqual(rows[0]["SpacingBetweenSlices"], 6.0)
-        self.assertEqual(rows[0]["ImageType"], "ORIGINAL\\PRIMARY")
+        self.assertEqual(rows[0]["ImageType"], "ORIGINAL|PRIMARY")
         self.assertEqual(rows[0]["coverage_mm"], 6)
         self.assertEqual(multi, [])
 
@@ -100,7 +99,7 @@ class MetadataExportTests(unittest.TestCase):
         rows, multi, _ = self.inspect()
         row = rows[0]
         self.assertEqual(set(row["SeriesDescription"]), {"AX T2", "AX T2 REPEAT"})
-        self.assertEqual(set(row["ImageType"]), {"ORIGINAL\\PRIMARY", "DERIVED\\SECONDARY"})
+        self.assertEqual(set(row["ImageType"]), {"ORIGINAL|PRIMARY", "DERIVED|SECONDARY"})
         self.assertEqual(set(row["SliceThickness"]), {4.0, 5.0})
         self.assertEqual(set(row["SpacingBetweenSlices"]), {6.0, 7.0})
         self.assertEqual(len(multi), 1)
@@ -141,7 +140,7 @@ class MetadataExportTests(unittest.TestCase):
         self.assertEqual(len(rows), 1)
         row = rows[0]
         self.assertEqual(row["SeriesDescription"], "AX T2")
-        self.assertEqual(row["ImageType"], "ORIGINAL\\PRIMARY")
+        self.assertEqual(row["ImageType"], "ORIGINAL|PRIMARY")
         self.assertEqual(row["SliceThickness"], 5)
         self.assertEqual(row["SpacingBetweenSlices"], "unknown")
         self.assertTrue(math.isnan(row["coverage_mm"]))
@@ -173,19 +172,29 @@ class MetadataExportTests(unittest.TestCase):
         self.assertEqual(rows[0]["coverage_mm"], 6)
         self.assertEqual(set(multi[0]["multiple_fields"]), {"SliceThickness", "SpacingBetweenSlices"})
 
-    def test_cli_serializes_json_and_rejects_existing_output(self):
-        self.write()
-        self.write(instance=2, z=2, SliceThickness=4)
+    def test_cli_serializes_unquoted_lists_and_rejects_existing_output(self):
+        first = self.write()
+        second = self.write(instance=2, z=2, SliceThickness=4, SpacingBetweenSlices=7,
+                            SeriesDescription="AX, T2 REPEAT", ImageType=["DERIVED", "SECONDARY", "OTHER"])
+        first.rename(first.with_name("DICOM_00001.dcm"))
+        second.rename(second.with_name("DICOM_00002.dcm"))
         output = self.base / "export"
         result = self.cli(output)
         self.assertEqual(result.returncode, 0, result.stderr)
         table = pd.read_csv(output / "series_meta.csv", keep_default_na=False)
         self.assertEqual(table.columns.tolist(), META_COLUMNS)
-        self.assertEqual(set(json.loads(table.loc[0, "SliceThickness"])), {4, 5})
-        self.assertEqual(len(json.loads(table.loc[0, "dicom_file_list"])), 2)
+        self.assertEqual(table.loc[0, "SliceThickness"], "[4.0, 5.0]")
+        self.assertEqual(table.loc[0, "SpacingBetweenSlices"], "[6.0, 7.0]")
+        self.assertEqual(table.loc[0, "dicom_file_list"], "[DICOM_00001, DICOM_00002]")
+        self.assertEqual(table.loc[0, "ImageType"], "[DERIVED|SECONDARY|OTHER, ORIGINAL|PRIMARY]")
+        self.assertEqual(table.loc[0, "SeriesDescription"], "[AX T2, AX, T2 REPEAT]")
+        raw = (output / "series_meta.csv").read_text(encoding="utf-8-sig")
+        self.assertNotIn('""', raw)
+        self.assertNotIn("\\", raw)
         multi = pd.read_csv(output / "series_multivalue.csv", keep_default_na=False)
         self.assertEqual(multi.columns.tolist(), MULTIVALUE_COLUMNS)
-        self.assertEqual(json.loads(multi.loc[0, "multiple_fields"]), ["SliceThickness"])
+        self.assertEqual(multi.loc[0, "multiple_fields"],
+                         "[SeriesDescription, ImageType, SliceThickness, SpacingBetweenSlices]")
         before = (output / "series_meta.csv").read_bytes()
         self.assertNotEqual(self.cli(output).returncode, 0)
         self.assertEqual((output / "series_meta.csv").read_bytes(), before)

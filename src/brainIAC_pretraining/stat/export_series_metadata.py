@@ -2,7 +2,6 @@
 
 import argparse
 import csv
-import json
 import math
 from collections import defaultdict
 from pathlib import Path
@@ -29,7 +28,7 @@ def metadata_values(ds):
     description = str(ds.get("SeriesDescription") or "").strip()
     image_type = ds.get("ImageType")
     if image_type is not None and not isinstance(image_type, str):
-        image_type = "\\".join(str(part).strip() for part in image_type)
+        image_type = "|".join(str(part).strip() for part in image_type)
     values = {"SeriesDescription": [description], "ImageType": [str(image_type or "").strip()],
               "SliceThickness": [], "SpacingBetweenSlices": []}
     shared = list(ds.get("SharedFunctionalGroupsSequence", [])[:1])
@@ -132,7 +131,7 @@ def write_csv(rows, path, columns):
         writer = csv.DictWriter(stream, fieldnames=columns)
         writer.writeheader()
         for row in rows:
-            writer.writerow({key: json.dumps(value, ensure_ascii=False) if isinstance(value, list)
+            writer.writerow({key: "[" + ", ".join(map(str, value)) + "]" if isinstance(value, list)
                              else ("unknown" if isinstance(value, float) and not math.isfinite(value) else value)
                              for key, value in row.items()})
 

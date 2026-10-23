@@ -33,22 +33,21 @@ python -m unittest discover -s src/brainIAC_pretraining/stat -p 'test_export_ser
 unique_id,study_id,SeriesInstanceUID,SeriesNumber,SeriesDescription,AcquisitionNumber,ImageType,SliceThickness,SpacingBetweenSlices,dicom_file_list,coverage_mm
 ```
 
-`SeriesDescription`、`ImageType`、`SliceThickness`、`SpacingBetweenSlices`：对选中组的非缺失值去重，一个值输出标量，多个值输出 JSON 列表。数值 5、5.0、5.000 视为相同，不提前四舍五入合并不同值；全部缺失输出 `unknown`，部分缺失保留已知值并记录问题。层厚和层间距读取普通顶层及 Enhanced MR shared/per-frame PixelMeasures；acquisition 选择仍基于顶层 AcquisitionNumber。
+`SeriesDescription`、`ImageType`、`SliceThickness`、`SpacingBetweenSlices`：对选中组的非缺失值去重，一个值输出标量，多个值输出方括号列表文本，不为元素添加引号，例如 `[AX T1, AX T2]`、`[4.0, 5.0]`。数值 5、5.0、5.000 视为相同，不提前四舍五入合并不同值；全部缺失输出 `unknown`，部分缺失保留已知值并记录问题。层厚和层间距读取普通顶层及 Enhanced MR shared/per-frame PixelMeasures；acquisition 选择仍基于顶层 AcquisitionNumber。
 
-`ImageType` 将每个文件的完整有序组成项用反斜杠连接，例如 `ORIGINAL\PRIMARY\M`。它整体算一个值；只有不同完整组合才触发多值记录。`multiple_fields` 示例为 `["SeriesDescription", "SliceThickness"]`，每个 unique_id 至多一行。
+`ImageType` 将每个文件的完整有序组成项用 `|` 连接，例如 `DERIVED|SECONDARY|OTHER`。它整体算一个值；只有不同完整组合才触发多值记录，多值示例为 `[DERIVED|SECONDARY|OTHER, ORIGINAL|PRIMARY]`。`multiple_fields` 也使用不带元素引号的列表文本，例如 `[SeriesDescription, SliceThickness]`，每个 unique_id 至多一行。
 
-`dicom_file_list` 始终是 JSON 列表，**只保留文件名，不含目录和扩展名**：`acq2/IM0001.dcm` 输出为 `IM0001`。无扩展名时保留原文件名；不同目录下文件名相同的条目仍分别保留，不去重。
+`dicom_file_list` 始终是方括号列表文本，例如 `[DICOM_00001, DICOM_00002]`，**只保留文件名，不含目录和扩展名**：`acq2/IM0001.dcm` 输出为 `IM0001`。无扩展名时保留原文件名；不同目录下文件名相同的条目仍分别保留，不去重。
 
 `coverage_mm` 沿用现有几何计算：有效一致几何下，首末独立切片平面中心的投影跨度，单位 mm；只有一个平面时为 0，无法计算时为 `unknown`，均保留该 unique_id。它不是按文件数乘层厚估算，也不是全脑覆盖确认。
 
-CSV 中的列表使用 `json.loads()` 解析，不按逗号手工拆分。例如：
+上述列表按展示文本读取，不再是 JSON，不能使用 `json.loads()`。包含逗号的整个单元格仍由标准 CSV writer 添加外层引号，CSV reader 会正确去掉该外层引号；元素不再因 JSON 引号产生双重双引号。字段原始文本本身的逗号或引号仍会保留，列表文本不提供无歧义的元素转义。例如：
 
 ```python
-import json
 import pandas as pd
 
 table = pd.read_csv("series_meta.csv", keep_default_na=False)
-files = json.loads(table.iloc[0]["dicom_file_list"])
+files_text = table.iloc[0]["dicom_file_list"]  # [DICOM_00001, DICOM_00002]
 ```
 
 ## 当前版本：按 SeriesInstanceUID 区分 series
